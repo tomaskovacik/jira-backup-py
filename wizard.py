@@ -13,6 +13,7 @@ def create_config():
 
     playwright_headless = "true"
     playwright_mfa_timeout = 120
+    playwright_login_timeout = 300
     if use_playwright == "true":
         playwright_headless = input(
             "Run browser in headless mode? (true / false) "
@@ -23,6 +24,11 @@ def create_config():
         ).strip()
         if mfa_timeout_input.isdigit():
             playwright_mfa_timeout = int(mfa_timeout_input)
+        login_timeout_input = input(
+            "Seconds to wait for each login page navigation step (default 300): "
+        ).strip()
+        if login_timeout_input.isdigit():
+            playwright_login_timeout = int(login_timeout_input)
 
     custom_config = {
         'HOST_URL': jira_host,
@@ -33,6 +39,7 @@ def create_config():
         'USE_PLAYWRIGHT': use_playwright == "true",
         'PLAYWRIGHT_HEADLESS': playwright_headless != "false",
         'PLAYWRIGHT_MFA_TIMEOUT': playwright_mfa_timeout,
+        'PLAYWRIGHT_LOGIN_TIMEOUT': playwright_login_timeout,
         'UPLOAD_TO_S3': {
             'AWS_ENDPOINT_URL': "",
             'AWS_REGION': "",

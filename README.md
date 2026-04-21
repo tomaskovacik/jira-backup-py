@@ -122,6 +122,7 @@ python backup.py -c --playwright
 USE_PLAYWRIGHT: true
 PLAYWRIGHT_HEADLESS: true          # false lets you watch the browser / complete MFA manually
 PLAYWRIGHT_MFA_TIMEOUT: 120        # seconds to wait for manual MFA when headless=false
+PLAYWRIGHT_LOGIN_TIMEOUT: 300      # seconds to wait for each login page navigation step (default 5 min)
 ```
 
 **Limitations:**
