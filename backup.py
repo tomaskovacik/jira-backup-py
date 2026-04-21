@@ -22,7 +22,6 @@ class Atlassian:
     def __init__(self, config):
         self.config = config
         self.session = requests.Session()
-        self.session.auth = (config['USER_EMAIL'], config['API_TOKEN'])
         self.session.headers.update({'Content-Type': 'application/json', 'Accept': 'application/json'})
         self.payload = {"cbAttachments": self.config['INCLUDE_ATTACHMENTS'], "exportToCloud": "true"}
         self.start_confluence_backup = 'https://{}/wiki/rest/obm/1.0/runbackup'.format(self.config['HOST_URL'])
@@ -30,6 +29,100 @@ class Atlassian:
         self.get_last_jira_backup = 'https://{}/rest/backup/1/export/lastTaskId'.format(self.config['HOST_URL'])
         self.backup_status = {}
         self.wait = 10
+
+        if self.config.get('USE_PLAYWRIGHT', False):
+            self.playwright_login()
+        else:
+            self.session.auth = (config['USER_EMAIL'], config['API_TOKEN'])
+
+    def playwright_login(self):
+        """Authenticate using a Playwright-controlled browser and transfer session cookies.
+
+        This mode is useful when API-token authentication is not available (e.g. SSO /
+        Okta-enforced organisations).  After a successful login the cookies are copied
+        into the shared requests.Session so all subsequent API calls are authenticated.
+
+        Requires:
+            pip install playwright
+            playwright install chromium
+        """
+        try:
+            from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+        except ImportError:
+            raise ImportError(
+                'playwright is required for web UI mode. '
+                'Install it with: pip install playwright && playwright install chromium'
+            )
+
+        password = self.config.get('ACCOUNT_PASSWORD') or ''
+        if not password:
+            raise ValueError(
+                'ACCOUNT_PASSWORD must be set in config.yaml when USE_PLAYWRIGHT is true. '
+                'Note: this is your Atlassian account password, not an API token.'
+            )
+
+        login_url = 'https://{}/login'.format(self.config['HOST_URL'])
+        print('-> Using Playwright web UI mode')
+        print('-> Navigating to login page: {}'.format(login_url))
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context()
+            page = context.new_page()
+
+            try:
+                page.goto(login_url, wait_until='networkidle', timeout=30000)
+            except Exception as nav_err:
+                browser.close()
+                raise RuntimeError('Failed to navigate to login page: {}'.format(nav_err))
+
+            # Step 1 – enter e-mail and click Continue
+            try:
+                page.wait_for_selector('#username', timeout=15000)
+                page.fill('#username', self.config['USER_EMAIL'])
+                page.click('#login-submit')
+            except PlaywrightTimeoutError:
+                browser.close()
+                raise RuntimeError(
+                    'Login page did not expose the expected username field (#username). '
+                    'The Atlassian login page structure may have changed.'
+                )
+
+            # Step 2 – enter password and submit
+            try:
+                page.wait_for_selector('#password', timeout=15000)
+                page.fill('#password', password)
+                page.click('#login-submit')
+            except PlaywrightTimeoutError:
+                browser.close()
+                raise RuntimeError(
+                    'Password field (#password) did not appear after entering the e-mail. '
+                    'The account may use SSO / a federated identity provider.'
+                )
+
+            # Step 3 – wait for the browser to land back on the Atlassian instance
+            try:
+                import re as _re
+                page.wait_for_url(_re.compile(_re.escape(self.config['HOST_URL'])), timeout=30000)
+            except PlaywrightTimeoutError:
+                browser.close()
+                raise RuntimeError(
+                    'Login did not complete within the timeout. '
+                    'Verify your credentials, or check whether the account has MFA enabled '
+                    '(MFA is not supported in web UI mode).'
+                )
+
+            # Transfer cookies to the shared requests.Session
+            for cookie in context.cookies():
+                self.session.cookies.set(
+                    cookie['name'],
+                    cookie['value'],
+                    domain=cookie.get('domain', '').lstrip('.')
+                )
+
+            browser.close()
+
+        print('-> Successfully authenticated via web UI')
 
     def generate_filename(self, backup_url, backup_type='jira'):
         """

@@ -4,6 +4,8 @@ USER_EMAIL: "email address for the Atlassian account you're using to create the 
 API_TOKEN: "token ID generated at https://id.atlassian.com/manage/api-tokens"
 INCLUDE_ATTACHMENTS: "include attachments? this will make the backup size bigger - true / false"
 DOWNLOAD_LOCALLY: "download the backup file to backups folder? true / false"
+USE_PLAYWRIGHT: false
+ACCOUNT_PASSWORD: "your Atlassian account password - only required when USE_PLAYWRIGHT is true"
 UPLOAD_TO_S3:
     AWS_ENDPOINT_URL: "amazon S3 endpoints https://docs.aws.amazon.com/general/latest/gr/s3.html"
     AWS_REGION: "amazon S3 region"
