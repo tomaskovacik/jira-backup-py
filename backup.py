@@ -359,6 +359,8 @@ if __name__ == '__main__':
     parser.add_argument('-w', action='store_true', dest='wizard', help='activate config wizard')
     parser.add_argument('-c', action='store_true', dest='confluence', help='activate confluence backup')
     parser.add_argument('-j', action='store_true', dest='jira', help='activate jira backup')
+    parser.add_argument('-p', '--playwright', action='store_true', dest='playwright',
+                        help='use Playwright web UI mode instead of REST API (requires: pip install playwright && playwright install chromium)')
     parser.add_argument('-s', '--schedule', action='store_true', dest='schedule', help='setup automated scheduled backup')
     parser.add_argument('--schedule-days', type=int, default=4, help='frequency in days for scheduled backup (default: 4)')
     parser.add_argument('--schedule-time', type=str, default='10:00', help='time for scheduled backup in HH:MM format (default: 10:00)')
@@ -400,7 +402,13 @@ if __name__ == '__main__':
 
     print('-> Starting backup; include attachments: {}'.format(config['INCLUDE_ATTACHMENTS']))
 
-    atlass = Atlassian(config)
+    use_playwright = args.playwright or config.get('USE_PLAYWRIGHT', False)
+    if use_playwright:
+        from playwright_backup import PlaywrightAtlassian
+        atlass = PlaywrightAtlassian(config)
+        print('-> Using Playwright web UI mode')
+    else:
+        atlass = Atlassian(config)
     
     backup_type = 'confluence' if args.confluence else 'jira'
     if args.confluence:
