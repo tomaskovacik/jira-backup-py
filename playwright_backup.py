@@ -24,8 +24,12 @@ The class reads three extra keys from *config*:
   manual MFA completion when running in headed mode.
 * ``PLAYWRIGHT_LOGIN_TIMEOUT`` (int, default ``300``) – seconds to wait for
   each navigation step during login (page load, network idle, etc.).
+* ``PLAYWRIGHT_COOKIES_FILE`` (str, default ``"playwright_cookies.json"``) –
+  path to a JSON file where browser session cookies are persisted between runs.
+  Set to an empty string ``""`` to disable cookie persistence.
 """
 
+import json
 import time
 import os
 import requests
@@ -82,6 +86,11 @@ class PlaywrightAtlassian(Atlassian):
         self._login_timeout: int = int(config.get("PLAYWRIGHT_LOGIN_TIMEOUT", 300))
         # _cookies will be populated after login and reused for HTTP downloads
         self._cookies: list = []
+        # Path for persisted session cookies; empty string disables persistence
+        _default_cookies_file = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "playwright_cookies.json"
+        )
+        self._cookies_file: str = config.get("PLAYWRIGHT_COOKIES_FILE", _default_cookies_file)
 
     # ------------------------------------------------------------------
     # Public API (mirroring Atlassian)
@@ -119,14 +128,29 @@ class PlaywrightAtlassian(Atlassian):
     # ------------------------------------------------------------------
 
     def _launch(self, pw):
-        """Launch Chromium and return *(browser, page)*."""
+        """Launch Chromium and return *(browser, page)*, restoring saved cookies if available."""
         browser = pw.chromium.launch(headless=self._headless)
         context = browser.new_context()
+        if self._cookies_file and os.path.exists(self._cookies_file):
+            try:
+                with open(self._cookies_file, "r") as fh:
+                    saved_cookies = json.load(fh)
+                context.add_cookies(saved_cookies)
+                print(f"-> Loaded saved session cookies from {self._cookies_file}")
+            except Exception as exc:
+                print(f"-> Could not load saved cookies ({exc}); will log in fresh")
         page = context.new_page()
         return browser, page
 
     def _login(self, page) -> None:
-        """Authenticate against Atlassian Cloud using email + API token / password."""
+        """Authenticate against Atlassian Cloud using email + API token / password.
+
+        If a previously saved cookie file restored a still-valid session the
+        method returns immediately without re-entering credentials.
+        """
+        if self._try_restore_session(page):
+            return
+
         host = self.config["HOST_URL"]
         login_url = f"https://{host}/login"
         print(f"-> Navigating to login page: {login_url}")
@@ -178,6 +202,26 @@ class PlaywrightAtlassian(Atlassian):
 
         print("-> Login completed")
 
+    def _try_restore_session(self, page) -> bool:
+        """Navigate to the host and return True when cookies provide a valid session.
+
+        A valid session means the browser lands on a page inside the workspace
+        (i.e. the host URL) rather than being redirected to an Atlassian or
+        third-party login page.
+        """
+        host = self.config["HOST_URL"]
+        restore_timeout_ms = 30_000
+        try:
+            page.goto(f"https://{host}", wait_until="networkidle", timeout=restore_timeout_ms)
+            current_url = page.url.lower()
+            login_indicators = ["atlassian.com/login", "/login", "id.atlassian.com"]
+            if host.lower() in current_url and not any(ind in current_url for ind in login_indicators):
+                print("-> Restored previous session from saved cookies, skipping login")
+                return True
+        except Exception as exc:
+            print(f"-> Session restore check failed ({exc}); will log in fresh")
+        return False
+
     def _check_for_sso(self, page) -> None:
         """Raise an informative error when the browser lands on a third-party SSO page."""
         if _is_sso_page(page.url):
@@ -215,10 +259,10 @@ class PlaywrightAtlassian(Atlassian):
                 )
 
     def _do_jira_backup(self, page) -> str:
-        """Navigate to the Jira backup admin page, trigger backup, return URL."""
+        """Navigate to the Jira Cloud Export admin page, trigger backup, return URL."""
         host = self.config["HOST_URL"]
-        backup_page = f"https://{host}/secure/admin/XmlBackup!default.jspa"
-        print(f"-> Navigating to Jira backup page: {backup_page}")
+        backup_page = f"https://{host}/secure/admin/CloudExport.jspa"
+        print(f"-> Navigating to Jira Cloud Export page: {backup_page}")
         page.goto(backup_page, wait_until="networkidle")
 
         # ---- Attachments checkbox ----
@@ -231,11 +275,22 @@ class PlaywrightAtlassian(Atlassian):
         except PlaywrightTimeoutError:
             pass
 
-        # ---- Click "Backup" ----
-        page.get_by_role("button", name="Backup").click()
+        # ---- Click the export / backup button ----
+        for button_name in ("Backup", "Start backup", "Export", "Submit"):
+            try:
+                btn = page.get_by_role("button", name=button_name)
+                btn.click()
+                break
+            except Exception:
+                continue
+        else:
+            # Fallback: first submit button on the page
+            page.locator('input[type="submit"], button[type="submit"]').first.click()
+
         print("-> Backup process started, waiting for download link…")
 
-        # ---- Wait for download link ----
+        # ---- Wait for download link to become visible ----
+        # The link href contains "/plugins/servlet/" (standard Jira export path)
         download_link = page.locator('a[href*="/plugins/servlet/"]').first
         download_link.wait_for(state="visible", timeout=600_000)  # 10 min
         href = download_link.get_attribute("href")
@@ -275,11 +330,22 @@ class PlaywrightAtlassian(Atlassian):
         return href
 
     def _save_cookies(self, page) -> None:
-        """Persist browser cookies so the requests session can reuse the auth."""
+        """Persist browser cookies to memory and optionally to disk for session reuse."""
         try:
             self._cookies = page.context.cookies()
         except Exception:
             self._cookies = []
+            return
+
+        if not self._cookies_file:
+            return
+
+        try:
+            with open(self._cookies_file, "w") as fh:
+                json.dump(self._cookies, fh)
+            print(f"-> Session cookies saved to {self._cookies_file}")
+        except Exception as exc:
+            print(f"-> Warning: could not save session cookies ({exc})")
 
     def _inject_cookies_into_session(self) -> None:
         """Transfer cookies from the browser context into the requests.Session."""

@@ -7,6 +7,7 @@ DOWNLOAD_LOCALLY: "download the backup file to backups folder? true / false"
 USE_PLAYWRIGHT: false
 PLAYWRIGHT_HEADLESS: true
 PLAYWRIGHT_MFA_TIMEOUT: 120
+PLAYWRIGHT_COOKIES_FILE: "playwright_cookies.json"
 UPLOAD_TO_S3:
     AWS_ENDPOINT_URL: "amazon S3 endpoints https://docs.aws.amazon.com/general/latest/gr/s3.html"
     AWS_REGION: "amazon S3 region"
