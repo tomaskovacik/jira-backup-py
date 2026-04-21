@@ -4,10 +4,6 @@ import time
 import os
 import argparse
 import requests
-import boto3
-from boto3.s3.transfer import TransferConfig
-from google.cloud import storage
-from azure.storage.blob import BlobServiceClient
 import wizard
 import platform
 import subprocess
@@ -176,6 +172,10 @@ class Atlassian:
 
     def stream_to_s3(self, url, remote_filename):
         print('-> Streaming to S3')
+        try:
+            import boto3
+        except ImportError:
+            raise ImportError("boto3 is required for S3 uploads. Install it with: pip install boto3")
 
         if self.config['UPLOAD_TO_S3']['AWS_ACCESS_KEY'] == '':
             s3_client = boto3.client('s3')
@@ -205,7 +205,11 @@ class Atlassian:
 
     def stream_to_gcs(self, url, remote_filename):
         print('-> Streaming to GCS')
-        
+        try:
+            from google.cloud import storage
+        except ImportError:
+            raise ImportError("google-cloud-storage is required for GCS uploads. Install it with: pip install google-cloud-storage")
+
         if self.config['UPLOAD_TO_GCP']['GCP_SERVICE_ACCOUNT_KEY']:
             client = storage.Client.from_service_account_json(
                 self.config['UPLOAD_TO_GCP']['GCP_SERVICE_ACCOUNT_KEY'],
@@ -231,7 +235,11 @@ class Atlassian:
 
     def stream_to_azure(self, url, remote_filename):
         print('-> Streaming to Azure Blob Storage')
-        
+        try:
+            from azure.storage.blob import BlobServiceClient
+        except ImportError:
+            raise ImportError("azure-storage-blob is required for Azure uploads. Install it with: pip install azure-storage-blob")
+
         if self.config['UPLOAD_TO_AZURE']['AZURE_CONNECTION_STRING']:
             blob_service_client = BlobServiceClient.from_connection_string(
                 self.config['UPLOAD_TO_AZURE']['AZURE_CONNECTION_STRING']
@@ -368,6 +376,7 @@ if __name__ == '__main__':
     
     if args.wizard:
         wizard.create_config()
+        sys.exit(0)
     
     if args.schedule:
         try:
@@ -393,6 +402,9 @@ if __name__ == '__main__':
             print(f"-> Error setting up scheduled task: {e}")
             exit(1)
     
+    if not args.jira and not args.confluence:
+        parser.error('Please specify either -j (jira) or -c (confluence) to run a backup')
+
     config = read_config(args.config_file)
 
     if config['HOST_URL'] == 'something.atlassian.net':
