@@ -17,11 +17,13 @@ same public methods:
     atlass = PlaywrightAtlassian(config)
     url = atlass.create_jira_backup()
 
-The class reads two extra keys from *config*:
+The class reads three extra keys from *config*:
 
 * ``PLAYWRIGHT_HEADLESS`` (bool, default ``True``) – run browser headless.
 * ``PLAYWRIGHT_MFA_TIMEOUT`` (int, default ``120``) – seconds to wait for
   manual MFA completion when running in headed mode.
+* ``PLAYWRIGHT_LOGIN_TIMEOUT`` (int, default ``300``) – seconds to wait for
+  each navigation step during login (page load, network idle, etc.).
 """
 
 import time
@@ -77,6 +79,7 @@ class PlaywrightAtlassian(Atlassian):
         super().__init__(config)
         self._headless: bool = config.get("PLAYWRIGHT_HEADLESS", True)
         self._mfa_timeout: int = int(config.get("PLAYWRIGHT_MFA_TIMEOUT", 120))
+        self._login_timeout: int = int(config.get("PLAYWRIGHT_LOGIN_TIMEOUT", 300))
         # _cookies will be populated after login and reused for HTTP downloads
         self._cookies: list = []
 
@@ -127,7 +130,8 @@ class PlaywrightAtlassian(Atlassian):
         host = self.config["HOST_URL"]
         login_url = f"https://{host}/login"
         print(f"-> Navigating to login page: {login_url}")
-        page.goto(login_url, wait_until="networkidle")
+        login_timeout_ms = self._login_timeout * 1_000
+        page.goto(login_url, wait_until="networkidle", timeout=login_timeout_ms)
 
         # ---- Check for SSO redirect before we try anything ----
         self._check_for_sso(page)
@@ -147,7 +151,7 @@ class PlaywrightAtlassian(Atlassian):
             page.get_by_role("button", name="Continue").click()
         except PlaywrightTimeoutError:
             page.get_by_role("button", name="Next").click()
-        page.wait_for_load_state("networkidle")
+        page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
 
         # ---- After "Continue", check again for SSO ----
         self._check_for_sso(page)
@@ -167,7 +171,7 @@ class PlaywrightAtlassian(Atlassian):
         except PlaywrightTimeoutError:
             page.get_by_role("button", name="Sign in").click()
 
-        page.wait_for_load_state("networkidle")
+        page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
 
         # ---- MFA detection ----
         self._handle_mfa(page)
