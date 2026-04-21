@@ -195,10 +195,21 @@ class PlaywrightAtlassian(Atlassian):
         except PlaywrightTimeoutError:
             page.get_by_role("button", name="Sign in").click()
 
-        page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
+        # Wait for any post-login redirect to settle before MFA check.
+        # A timeout here is non-fatal: _handle_mfa polls the URL itself.
+        try:
+            page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
+        except PlaywrightTimeoutError:
+            print("-> Warning: page did not reach networkidle after login submit; continuing")
 
         # ---- MFA detection ----
         self._handle_mfa(page)
+
+        # Ensure the post-login / post-MFA page is fully loaded before continuing
+        try:
+            page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
+        except PlaywrightTimeoutError:
+            print("-> Warning: page did not reach networkidle after MFA/login; continuing")
 
         print("-> Login completed")
 
@@ -244,9 +255,14 @@ class PlaywrightAtlassian(Atlassian):
                 )
                 deadline = time.time() + self._mfa_timeout
                 host = self.config["HOST_URL"]
+                login_timeout_ms = self._login_timeout * 1_000
                 while time.time() < deadline:
                     if host in page.url and not any(i in page.url.lower() for i in mfa_indicators):
                         print("-> MFA completed, continuing.")
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
+                        except PlaywrightTimeoutError:
+                            print("-> Warning: page did not reach networkidle after MFA; continuing")
                         return
                     time.sleep(2)
                 raise TimeoutError(
@@ -263,7 +279,7 @@ class PlaywrightAtlassian(Atlassian):
         host = self.config["HOST_URL"]
         backup_page = f"https://{host}/secure/admin/CloudExport.jspa"
         print(f"-> Navigating to Jira Cloud Export page: {backup_page}")
-        page.goto(backup_page, wait_until="networkidle")
+        page.goto(backup_page, wait_until="networkidle", timeout=self._login_timeout * 1_000)
 
         # ---- Attachments checkbox ----
         include = str(self.config.get("INCLUDE_ATTACHMENTS", "false")).lower() == "true"
@@ -304,7 +320,7 @@ class PlaywrightAtlassian(Atlassian):
         host = self.config["HOST_URL"]
         backup_page = f"https://{host}/wiki/admin/backup.action"
         print(f"-> Navigating to Confluence backup page: {backup_page}")
-        page.goto(backup_page, wait_until="networkidle")
+        page.goto(backup_page, wait_until="networkidle", timeout=self._login_timeout * 1_000)
 
         # ---- Attachments checkbox ----
         include = str(self.config.get("INCLUDE_ATTACHMENTS", "false")).lower() == "true"
