@@ -14,6 +14,7 @@ A Python-based backup tool for Atlassian Cloud Jira and Confluence instances wit
 - **Cross-Platform Scheduling**: Automatically create cron jobs (Linux/macOS) or scheduled tasks (Windows)
 - **Configuration Wizard**: Interactive setup for easy configuration
 - **API Token Authentication**: Secure authentication using Atlassian API tokens
+- **Playwright Web UI Mode**: Browser-based fallback that drives the Atlassian admin UI directly (useful when REST APIs are unavailable)
 
 ## 📋 Prerequisites
 
@@ -41,7 +42,14 @@ A Python-based backup tool for Atlassian Cloud Jira and Confluence instances wit
    pip install -r requirements.txt
    ```
 
-4. **Generate API token**
+4. **Install Playwright browser** *(only needed for Playwright mode)*
+   ```bash
+   playwright install chromium
+   # On CI / headless Linux servers also install OS dependencies:
+   playwright install --with-deps chromium
+   ```
+
+5. **Generate API token**
    - Go to [Atlassian API Tokens](https://id.atlassian.com/manage/api-tokens) and create a token
    
 5. **Configure the application**
@@ -95,6 +103,36 @@ CUSTOM_FILENAME:
   CONFLUENCE: "confluence.{timestamp}"
 ```
 
+### Playwright Web UI Mode
+
+Playwright mode is a browser-based fallback that drives the Atlassian Cloud admin
+UI directly.  It is useful when the backup REST APIs are unavailable or when you
+prefer UI-based automation.
+
+**Enable via CLI flag:**
+
+```bash
+python backup.py -j --playwright
+python backup.py -c --playwright
+```
+
+**Enable in `config.yaml`:**
+
+```yaml
+USE_PLAYWRIGHT: true
+PLAYWRIGHT_HEADLESS: true          # false lets you watch the browser / complete MFA manually
+PLAYWRIGHT_MFA_TIMEOUT: 120        # seconds to wait for manual MFA when headless=false
+```
+
+**Limitations:**
+
+| Limitation | Notes |
+|---|---|
+| Third-party SSO (Okta, Azure AD, etc.) | Not supported — use REST API mode or configure an Atlassian API-token bypass |
+| MFA / two-step verification | Use `PLAYWRIGHT_HEADLESS: false` and complete MFA in the browser window |
+| Headless Linux / CI | Run `playwright install --with-deps chromium` to install OS-level dependencies |
+| Atlassian UI changes | Selectors use ARIA roles/labels for stability, but may need updates if Atlassian redesigns admin pages |
+
 ### Configuration Wizard
 
 For interactive setup, run:
@@ -102,7 +140,7 @@ For interactive setup, run:
 python backup.py -w
 ```
 
-This will guide you through setting up basic Jira credentials and S3 configuration.
+This will guide you through setting up basic Jira credentials, S3 configuration, and Playwright mode.
 
 ## 🚀 Usage
 
@@ -144,6 +182,7 @@ This will create:
 |--------|-------------|
 | `-j, --jira` | Backup Jira (default if no service specified) |
 | `-c, --confluence` | Backup Confluence |
+| `-p, --playwright` | Use Playwright web UI mode instead of REST API |
 | `-w, --wizard` | Run configuration wizard |
 | `-s, --schedule` | Setup automated scheduled backup |
 | `--schedule-days` | Frequency in days for scheduled backup (default: 4) |
@@ -191,6 +230,7 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 
 ## 📝 Changelog
 
+- **2026-04-21**: Added Playwright web UI mode as a fallback backup driver
 - **2025-06-24**: Added separate cron schedules for Jira and Confluence backups
 - **2025-06-24**: Made cloud storage configuration sections optional
 - **2025-06-24**: Added automated scheduling support for backup tasks
