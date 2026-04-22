@@ -313,12 +313,20 @@ class PlaywrightAtlassian(Atlassian):
         print("-> Backup process started, waiting for download link…")
 
         # ---- Wait for download link to become visible ----
-        # The link href contains "/plugins/servlet/" (standard Jira export path)
-        download_link = page.locator('a[href*="/plugins/servlet/"]').first
+        # Use a specific selector for the export servlet to avoid matching unrelated
+        # /plugins/servlet/* links (e.g. /plugins/servlet/webhooks) that appear on
+        # the same page before the real backup download link is ready.
+        download_link = page.locator('a[href*="/plugins/servlet/export/"]').first
         download_link.wait_for(state="visible", timeout=600_000)  # 10 min
         href = download_link.get_attribute("href")
         if not href.startswith("http"):
             href = f"https://{host}{href}"
+        # Sanity-check: the href must look like an actual download, not an admin page.
+        if not (href.endswith(".zip") or "fileId" in href or "export/download" in href):
+            raise RuntimeError(
+                f"Unexpected backup URL detected (possible page-layout mismatch): {href}\n"
+                "The selector matched a non-backup link. Please report this issue."
+            )
         print(f"-> Backup ready: {href}")
         return href
 
