@@ -33,7 +33,7 @@ class Atlassian:
         self.start_jira_backup = 'https://{}/rest/backup/1/export/runbackup'.format(self.config['HOST_URL'])
         self.get_last_jira_backup = 'https://{}/rest/backup/1/export/lastTaskId'.format(self.config['HOST_URL'])
         self.backup_status = {}
-        self.wait = 10
+        self.wait = 30
 
     def generate_filename(self, backup_url, backup_type='jira'):
         """
