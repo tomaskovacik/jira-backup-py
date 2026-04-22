@@ -46,6 +46,22 @@ except ImportError as exc:  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Seconds to wait after triggering a Confluence backup before polling for the
+# new download link.  The page often still shows the *previous* backup's link
+# immediately after the button is clicked; this delay gives the server time to
+# start generating a new backup and update the link.
+_CONFLUENCE_BACKUP_INITIAL_WAIT: int = 30
+
+# Maximum seconds to wait for a new Confluence backup download link to appear.
+_CONFLUENCE_BACKUP_LINK_TIMEOUT: int = 600  # 10 minutes
+
+# Seconds between polling attempts when waiting for a new backup link.
+_CONFLUENCE_BACKUP_POLL_INTERVAL: int = 5
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -360,6 +376,18 @@ class PlaywrightAtlassian(Atlassian):
         except Exception:
             pass
 
+        # ---- Capture the existing backup link URL (if any) before clicking ----
+        # The page may already show a link from a previous backup run.  We need
+        # to wait for a *new* link that differs from the pre-click URL so that
+        # we don't accidentally return the stale previous-backup URL.
+        existing_href: str = ""
+        try:
+            existing_locator = page.locator('span#backupLocation a[href]').first
+            if existing_locator.is_visible(timeout=3_000):
+                existing_href = existing_locator.get_attribute("href") or ""
+        except Exception:
+            pass
+
         # ---- Click "Create backup for cloud" (id="submit") ----
         try:
             page.locator('#submit').click(timeout=15_000)
@@ -368,10 +396,34 @@ class PlaywrightAtlassian(Atlassian):
             page.locator('input[value="Create backup for cloud"]').click()
         print("-> Backup process started, waiting for download link…")
 
-        # ---- Poll until the backup download link appears inside span#backupLocation ----
-        download_link = page.locator('span#backupLocation a[href]').first
-        download_link.wait_for(state="visible", timeout=600_000)  # 10 min
-        href = download_link.get_attribute("href")
+        # ---- Wait at least _CONFLUENCE_BACKUP_INITIAL_WAIT s before polling so
+        #      the server has time to start generating the new backup and
+        #      overwrite the old link. ----
+        time.sleep(_CONFLUENCE_BACKUP_INITIAL_WAIT)
+
+        # ---- Poll until a *new* backup download link appears ----
+        # We retry for up to _CONFLUENCE_BACKUP_LINK_TIMEOUT seconds, checking
+        # every _CONFLUENCE_BACKUP_POLL_INTERVAL seconds.
+        deadline = time.time() + _CONFLUENCE_BACKUP_LINK_TIMEOUT
+        href = ""
+        while time.time() < deadline:
+            try:
+                link_locator = page.locator('span#backupLocation a[href]').first
+                if link_locator.is_visible(timeout=5_000):
+                    candidate = link_locator.get_attribute("href") or ""
+                    if candidate and candidate != existing_href:
+                        href = candidate
+                        break
+            except Exception:
+                pass
+            time.sleep(_CONFLUENCE_BACKUP_POLL_INTERVAL)
+
+        if not href:
+            raise TimeoutError(
+                f"Confluence backup did not produce a new download link within "
+                f"{_CONFLUENCE_BACKUP_LINK_TIMEOUT} seconds."
+            )
+
         if not href.startswith("http"):
             href = f"https://{host}{href}"
         print(f"-> Backup ready: {href}")
