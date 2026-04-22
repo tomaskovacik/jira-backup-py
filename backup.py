@@ -119,6 +119,20 @@ class Atlassian:
         return '{prefix}/{result_id}'.format(
             prefix='https://' + self.config['HOST_URL'] + '/plugins/servlet', result_id=self.backup_status['result'])
 
+    def is_already_downloaded(self, backup_url):
+        """
+        Check if a backup with the same UUID as in backup_url already exists
+        in the local backups directory.
+        Returns the existing filename if found, None otherwise.
+        """
+        uuid = backup_url.split('/')[-1].replace('?fileId=', '')
+        backups_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups')
+        if os.path.isdir(backups_dir):
+            for filename in os.listdir(backups_dir):
+                if uuid in filename:
+                    return filename
+        return None
+
     def download_file(self, url, local_filename, max_retries=5):
         print('-> Downloading file from URL: {}'.format(url))
         file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', local_filename)
@@ -424,14 +438,18 @@ if __name__ == '__main__':
     file_name = atlass.generate_filename(backup_url, backup_type)
     print('-> Generated filename: {}'.format(file_name))
 
-    if config['DOWNLOAD_LOCALLY'] == 'true':
-        atlass.download_file(backup_url, file_name)
+    existing_file = atlass.is_already_downloaded(backup_url)
+    if existing_file:
+        print('-> Backup with the same UUID already exists locally as "{}". Skipping download and upload.'.format(existing_file))
+    else:
+        if config['DOWNLOAD_LOCALLY'] == 'true':
+            atlass.download_file(backup_url, file_name)
 
-    if 'UPLOAD_TO_S3' in config and config['UPLOAD_TO_S3'].get('S3_BUCKET', '') != '':
-        atlass.stream_to_s3(backup_url, file_name)
-    
-    if 'UPLOAD_TO_GCP' in config and config['UPLOAD_TO_GCP'].get('GCS_BUCKET', '') != '':
-        atlass.stream_to_gcs(backup_url, file_name)
-    
-    if 'UPLOAD_TO_AZURE' in config and config['UPLOAD_TO_AZURE'].get('AZURE_CONTAINER', '') != '':
-        atlass.stream_to_azure(backup_url, file_name)
+        if 'UPLOAD_TO_S3' in config and config['UPLOAD_TO_S3'].get('S3_BUCKET', '') != '':
+            atlass.stream_to_s3(backup_url, file_name)
+        
+        if 'UPLOAD_TO_GCP' in config and config['UPLOAD_TO_GCP'].get('GCS_BUCKET', '') != '':
+            atlass.stream_to_gcs(backup_url, file_name)
+        
+        if 'UPLOAD_TO_AZURE' in config and config['UPLOAD_TO_AZURE'].get('AZURE_CONTAINER', '') != '':
+            atlass.stream_to_azure(backup_url, file_name)
