@@ -2,9 +2,11 @@ import json
 import yaml
 import time
 import os
+import re
 import argparse
 import requests
 import boto3
+from urllib.parse import urlparse, parse_qs
 from boto3.s3.transfer import TransferConfig
 from google.cloud import storage
 from azure.storage.blob import BlobServiceClient
@@ -125,11 +127,27 @@ class Atlassian:
         in the local backups directory.
         Returns the existing filename if found, None otherwise.
         """
-        uuid = backup_url.split('/')[-1].replace('?fileId=', '')
+        parsed = urlparse(backup_url)
+        qs = parse_qs(parsed.query)
+        if 'fileId' in qs:
+            backup_id = qs['fileId'][0]
+        else:
+            backup_id = parsed.path.split('/')[-1]
+
+        # Validate that it looks like a UUID (8-4-4-4-12 hex groups)
+        uuid_pattern = re.compile(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+            re.IGNORECASE
+        )
+        if not uuid_pattern.match(backup_id):
+            return None
+
+        # Match the UUID precisely: surrounded by non-UUID characters or string boundaries
+        match_pattern = re.compile(r'(?<![0-9a-fA-F\-])' + re.escape(backup_id) + r'(?![0-9a-fA-F\-])')
         backups_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups')
         if os.path.isdir(backups_dir):
             for filename in os.listdir(backups_dir):
-                if uuid in filename:
+                if match_pattern.search(filename):
                     return filename
         return None
 
