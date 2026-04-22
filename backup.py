@@ -411,10 +411,14 @@ if __name__ == '__main__':
         atlass = Atlassian(config)
     
     backup_type = 'confluence' if args.confluence else 'jira'
-    if args.confluence:
-        backup_url = atlass.create_confluence_backup()
-    else:
-        backup_url = atlass.create_jira_backup()
+    try:
+        if args.confluence:
+            backup_url = atlass.create_confluence_backup()
+        else:
+            backup_url = atlass.create_jira_backup()
+    except RuntimeError as e:
+        print(f'-> Backup failed: {e}')
+        exit(1)
 
     print('-> Backup URL: {}'.format(backup_url))
     file_name = atlass.generate_filename(backup_url, backup_type)
