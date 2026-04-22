@@ -331,9 +331,9 @@ class PlaywrightAtlassian(Atlassian):
         return href
 
     def _do_confluence_backup(self, page) -> str:
-        """Navigate to the Confluence backup admin page, trigger backup, return URL."""
+        """Navigate to the Confluence Cloud backup admin page, trigger backup, return URL."""
         host = self.config["HOST_URL"]
-        backup_page = f"https://{host}/wiki/admin/backup.action"
+        backup_page = f"https://{host}/wiki/plugins/servlet/ondemandbackupmanager/admin"
         print(f"-> Navigating to Confluence backup page: {backup_page}")
         try:
             page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
@@ -348,21 +348,28 @@ class PlaywrightAtlassian(Atlassian):
             page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
 
         # ---- Attachments checkbox ----
+        # Confluence Cloud uses "cbAttachments2" as the checkbox name on the
+        # ondemandbackupmanager page (there are two attachment checkboxes; the
+        # relevant one for cloud backups has name="cbAttachments2").
         include = str(self.config.get("INCLUDE_ATTACHMENTS", "false")).lower() == "true"
         try:
-            checkbox = page.get_by_label("Include attachments", exact=False)
+            checkbox = page.locator('input[name="cbAttachments2"]')
             if checkbox.is_visible():
                 if include != checkbox.is_checked():
                     checkbox.click()
-        except PlaywrightTimeoutError:
+        except Exception:
             pass
 
-        # ---- Click "Backup" ----
-        page.get_by_role("button", name="Backup").click()
+        # ---- Click "Create backup for cloud" (id="submit") ----
+        try:
+            page.locator('#submit').click(timeout=15_000)
+        except Exception:
+            # Fallback: match by value attribute
+            page.locator('input[value="Create backup for cloud"]').click()
         print("-> Backup process started, waiting for download link…")
 
-        # ---- Poll until a download link appears ----
-        download_link = page.locator('a[href*="/wiki/download/"]').first
+        # ---- Poll until the backup download link appears inside span#backupLocation ----
+        download_link = page.locator('span#backupLocation a[href]').first
         download_link.wait_for(state="visible", timeout=600_000)  # 10 min
         href = download_link.get_attribute("href")
         if not href.startswith("http"):
