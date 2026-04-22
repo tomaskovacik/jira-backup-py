@@ -321,11 +321,8 @@ class PlaywrightAtlassian(Atlassian):
         href = download_link.get_attribute("href")
         if not href.startswith("http"):
             href = f"https://{host}{href}"
-        # Sanity-check: the href must look like a file download, not an admin page.
-        _known_non_download = ("/plugins/servlet/webhooks",)
-        if any(href.rstrip("/").endswith(p) for p in _known_non_download) or not (
-            href.endswith(".zip") or "fileId" in href or "export/download" in href
-        ):
+        # Sanity-check: the href must look like an actual download, not an admin page.
+        if not (href.endswith(".zip") or "fileId" in href or "export/download" in href):
             raise RuntimeError(
                 f"Unexpected backup URL detected (possible page-layout mismatch): {href}\n"
                 "The selector matched a non-backup link. Please report this issue."
