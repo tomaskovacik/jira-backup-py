@@ -145,12 +145,23 @@ class PlaywrightAtlassian(Atlassian):
     def _login(self, page) -> None:
         """Authenticate against Atlassian Cloud using email + API token / password.
 
-        If a previously saved cookie file restored a still-valid session the
-        method returns immediately without re-entering credentials.
+        When a saved cookies file is present the login flow is skipped entirely
+        (wizard-once mode): the cookies are already loaded by :meth:`_launch`
+        and the backup methods navigate directly to the backup page.  If the
+        saved session has expired those methods detect the auth redirect and
+        call :meth:`_do_login_flow` themselves before retrying.
+
+        On the very first run (no cookies file) a full interactive login is
+        performed and the resulting cookies are persisted for future runs.
         """
-        if self._try_restore_session(page):
+        if self._cookies_file and os.path.exists(self._cookies_file):
+            print("-> Saved cookies found, skipping login and navigating directly to backup page")
             return
 
+        self._do_login_flow(page)
+
+    def _do_login_flow(self, page) -> None:
+        """Perform the actual login sequence: email → password → MFA."""
         host = self.config["HOST_URL"]
         login_url = f"https://{host}/login"
         print(f"-> Navigating to login page: {login_url}")
@@ -213,26 +224,6 @@ class PlaywrightAtlassian(Atlassian):
 
         print("-> Login completed")
 
-    def _try_restore_session(self, page) -> bool:
-        """Navigate to the host and return True when cookies provide a valid session.
-
-        A valid session means the browser lands on a page inside the workspace
-        (i.e. the host URL) rather than being redirected to an Atlassian or
-        third-party login page.
-        """
-        host = self.config["HOST_URL"]
-        restore_timeout_ms = 30_000
-        try:
-            page.goto(f"https://{host}", wait_until="networkidle", timeout=restore_timeout_ms)
-            current_url = page.url.lower()
-            login_indicators = ["atlassian.com/login", "/login", "id.atlassian.com"]
-            if host.lower() in current_url and not any(ind in current_url for ind in login_indicators):
-                print("-> Restored previous session from saved cookies, skipping login")
-                return True
-        except Exception as exc:
-            print(f"-> Session restore check failed ({exc}); will log in fresh")
-        return False
-
     def _check_for_sso(self, page) -> None:
         """Raise an informative error when the browser lands on a third-party SSO page."""
         if _is_sso_page(page.url):
@@ -274,12 +265,28 @@ class PlaywrightAtlassian(Atlassian):
                     "headless mode.  Set PLAYWRIGHT_HEADLESS: false in config.yaml and retry."
                 )
 
+    def _is_auth_redirect(self, url: str) -> bool:
+        """Return True when *url* indicates an authentication redirect."""
+        url_lower = url.lower()
+        auth_indicators = ["atlassian.com/login", "/login", "id.atlassian.com"]
+        return any(ind in url_lower for ind in auth_indicators)
+
     def _do_jira_backup(self, page) -> str:
         """Navigate to the Jira Cloud Export admin page, trigger backup, return URL."""
         host = self.config["HOST_URL"]
         backup_page = f"https://{host}/secure/admin/CloudExport.jspa"
         print(f"-> Navigating to Jira Cloud Export page: {backup_page}")
-        page.goto(backup_page, wait_until="networkidle", timeout=self._login_timeout * 1_000)
+        try:
+            page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
+        except PlaywrightTimeoutError:
+            print("-> Warning: backup page timed out waiting for load; continuing")
+
+        # If we were redirected to a login page (e.g. saved cookies expired),
+        # perform a fresh login and navigate to the backup page again.
+        if self._is_auth_redirect(page.url):
+            print("-> Session expired or not authenticated – logging in fresh")
+            self._do_login_flow(page)
+            page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
 
         # ---- Attachments checkbox ----
         include = str(self.config.get("INCLUDE_ATTACHMENTS", "false")).lower() == "true"
@@ -320,7 +327,17 @@ class PlaywrightAtlassian(Atlassian):
         host = self.config["HOST_URL"]
         backup_page = f"https://{host}/wiki/admin/backup.action"
         print(f"-> Navigating to Confluence backup page: {backup_page}")
-        page.goto(backup_page, wait_until="networkidle", timeout=self._login_timeout * 1_000)
+        try:
+            page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
+        except PlaywrightTimeoutError:
+            print("-> Warning: backup page timed out waiting for load; continuing")
+
+        # If we were redirected to a login page (e.g. saved cookies expired),
+        # perform a fresh login and navigate to the backup page again.
+        if self._is_auth_redirect(page.url):
+            print("-> Session expired or not authenticated – logging in fresh")
+            self._do_login_flow(page)
+            page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
 
         # ---- Attachments checkbox ----
         include = str(self.config.get("INCLUDE_ATTACHMENTS", "false")).lower() == "true"
