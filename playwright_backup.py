@@ -326,6 +326,7 @@ class PlaywrightAtlassian(Atlassian):
             # Fallback: first submit button on the page
             page.locator('input[type="submit"], button[type="submit"]').first.click()
 
+        self._check_backup_rate_limit(page)
         print("-> Backup process started, waiting for download link…")
 
         # ---- Wait for download link to become visible ----
@@ -394,6 +395,8 @@ class PlaywrightAtlassian(Atlassian):
         except Exception:
             # Fallback: match by value attribute
             page.locator('input[value="Create backup for cloud"]').click()
+
+        self._check_backup_rate_limit(page)
         print("-> Backup process started, waiting for download link…")
 
         # ---- Wait at least _CONFLUENCE_BACKUP_INITIAL_WAIT s before polling so
@@ -428,6 +431,53 @@ class PlaywrightAtlassian(Atlassian):
             href = f"https://{host}{href}"
         print(f"-> Backup ready: {href}")
         return href
+
+    def _check_backup_rate_limit(self, page, wait_ms: int = 3_000) -> None:
+        """Detect and surface the Atlassian backup-frequency rate-limit message.
+
+        After a backup button is clicked Atlassian may display a message of the
+        form::
+
+            Sorry
+            Backup frequency is limited. You can not make another backup right
+            now. Approximate time till next allowed backup: HH hours and MM minutes
+
+        When that message is found, its text is printed to the terminal and a
+        :class:`RuntimeError` is raised so the caller exits cleanly without
+        waiting unnecessarily for a download link that will never appear.
+        """
+        # Give the page a moment to render any error banner before we check.
+        time.sleep(wait_ms / 1_000)
+
+        rate_limit_keywords = [
+            "sorry",
+            "backup frequency is limited",
+            "you can not make another backup",
+            "approximate time till next allowed backup",
+        ]
+
+        try:
+            page_text = page.locator("body").inner_text(timeout=5_000)
+        except Exception:
+            return  # If we can't read the page, proceed and let the caller handle it
+
+        page_text_lower = page_text.lower()
+        # Require at least one of the more specific keywords to avoid false positives
+        # on generic "Sorry" messages unrelated to backup rate limiting.
+        specific_keywords = rate_limit_keywords[1:]
+        if any(kw in page_text_lower for kw in specific_keywords):
+            # Try to extract the exact message paragraph for a clean terminal output.
+            message_lines = []
+            for line in page_text.splitlines():
+                line_stripped = line.strip()
+                if not line_stripped:
+                    continue
+                line_lower = line_stripped.lower()
+                if any(kw in line_lower for kw in rate_limit_keywords):
+                    message_lines.append(line_stripped)
+            message = "\n".join(message_lines) if message_lines else "Backup frequency is limited."
+            print(f"-> Rate limit message from site:\n{message}")
+            raise RuntimeError(message)
 
     def _save_cookies(self, page) -> None:
         """Persist browser cookies to memory and optionally to disk for session reuse."""
