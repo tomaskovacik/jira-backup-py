@@ -2,9 +2,11 @@ import json
 import yaml
 import time
 import os
+import re
 import argparse
 import requests
 import boto3
+from urllib.parse import urlparse, parse_qs
 from boto3.s3.transfer import TransferConfig
 from google.cloud import storage
 from azure.storage.blob import BlobServiceClient
@@ -118,6 +120,36 @@ class Atlassian:
             time.sleep(self.wait)
         return '{prefix}/{result_id}'.format(
             prefix='https://' + self.config['HOST_URL'] + '/plugins/servlet', result_id=self.backup_status['result'])
+
+    def is_already_downloaded(self, backup_url):
+        """
+        Check if a backup with the same UUID as in backup_url already exists
+        in the local backups directory.
+        Returns the existing filename if found, None otherwise.
+        """
+        parsed = urlparse(backup_url)
+        qs = parse_qs(parsed.query)
+        if 'fileId' in qs:
+            backup_id = qs['fileId'][0]
+        else:
+            backup_id = parsed.path.split('/')[-1]
+
+        # Validate that it looks like a UUID (8-4-4-4-12 hex groups)
+        uuid_pattern = re.compile(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+            re.IGNORECASE
+        )
+        if not uuid_pattern.match(backup_id):
+            return None
+
+        # Match the UUID precisely: surrounded by non-UUID characters or string boundaries
+        match_pattern = re.compile(r'(?<![0-9a-fA-F\-])' + re.escape(backup_id) + r'(?![0-9a-fA-F\-])')
+        backups_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups')
+        if os.path.isdir(backups_dir):
+            for filename in os.listdir(backups_dir):
+                if match_pattern.search(filename):
+                    return filename
+        return None
 
     def download_file(self, url, local_filename, max_retries=5):
         print('-> Downloading file from URL: {}'.format(url))
@@ -424,14 +456,18 @@ if __name__ == '__main__':
     file_name = atlass.generate_filename(backup_url, backup_type)
     print('-> Generated filename: {}'.format(file_name))
 
-    if config['DOWNLOAD_LOCALLY'] == 'true':
-        atlass.download_file(backup_url, file_name)
+    existing_file = atlass.is_already_downloaded(backup_url)
+    if existing_file:
+        print('-> Backup with the same UUID already exists locally as "{}". Skipping download and upload.'.format(existing_file))
+    else:
+        if config['DOWNLOAD_LOCALLY'] == 'true':
+            atlass.download_file(backup_url, file_name)
 
-    if 'UPLOAD_TO_S3' in config and config['UPLOAD_TO_S3'].get('S3_BUCKET', '') != '':
-        atlass.stream_to_s3(backup_url, file_name)
-    
-    if 'UPLOAD_TO_GCP' in config and config['UPLOAD_TO_GCP'].get('GCS_BUCKET', '') != '':
-        atlass.stream_to_gcs(backup_url, file_name)
-    
-    if 'UPLOAD_TO_AZURE' in config and config['UPLOAD_TO_AZURE'].get('AZURE_CONTAINER', '') != '':
-        atlass.stream_to_azure(backup_url, file_name)
+        if 'UPLOAD_TO_S3' in config and config['UPLOAD_TO_S3'].get('S3_BUCKET', '') != '':
+            atlass.stream_to_s3(backup_url, file_name)
+        
+        if 'UPLOAD_TO_GCP' in config and config['UPLOAD_TO_GCP'].get('GCS_BUCKET', '') != '':
+            atlass.stream_to_gcs(backup_url, file_name)
+        
+        if 'UPLOAD_TO_AZURE' in config and config['UPLOAD_TO_AZURE'].get('AZURE_CONTAINER', '') != '':
+            atlass.stream_to_azure(backup_url, file_name)
