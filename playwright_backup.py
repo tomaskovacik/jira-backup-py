@@ -304,14 +304,24 @@ class PlaywrightAtlassian(Atlassian):
             self._do_login_flow(page)
             page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
 
+        # ---- Wait for the page JS to finish rendering ----
+        # The Jira export page renders the previous backup download link via
+        # JavaScript *after* the initial HTML load event fires.  Give it 10 s to
+        # appear before we try to read it, otherwise we may capture an empty link
+        # and lose the fallback URL we need when the site is rate-limited.
+        print("-> Waiting 10 s for page to render existing backup link…")
+        time.sleep(10)
+
         # ---- Pre-click: read any existing backup link already on the page ----
         # We always capture this before touching the button so we can fall back to
         # it both for CHECK_EXISTING_BACKUP and for rate-limit recovery below.
         pre_click_href: str = ""
         try:
             pre_click_locator = page.locator('a[href*="/plugins/servlet/export/"]').first
-            if pre_click_locator.is_visible(timeout=3_000):
+            if pre_click_locator.is_visible(timeout=10_000):
                 pre_click_href = pre_click_locator.get_attribute("href") or ""
+                if pre_click_href:
+                    print(f"-> Existing backup link found on page: {pre_click_href}")
         except Exception:
             pass
 
