@@ -334,10 +334,13 @@ class PlaywrightAtlassian(Atlassian):
             # Page is already rate-limited – use the existing link if available.
             if pre_click_href:
                 full_href = pre_click_href if pre_click_href.startswith("http") else f"https://{host}{pre_click_href}"
-                if not self.is_already_downloaded(full_href):
-                    print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
-                    print("-> Using existing backup instead of creating a new one.")
+                existing_file = self.is_already_downloaded(full_href)
+                if existing_file:
+                    print(f"-> Backup with the same UUID already exists locally as \"{existing_file}\". Not downloading.")
                     return full_href
+                print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
+                print("-> Using existing backup instead of creating a new one.")
+                return full_href
             # The Jira export page does not always render a visible download link
             # when rate-limited.  Fall back to the REST API to locate the last backup.
             api_url = self.get_existing_jira_backup()
@@ -354,10 +357,13 @@ class PlaywrightAtlassian(Atlassian):
         # manually created a backup via the web UI).
         if self.config.get("CHECK_EXISTING_BACKUP", False) and pre_click_href:
             full_href = pre_click_href if pre_click_href.startswith("http") else f"https://{host}{pre_click_href}"
-            if not self.is_already_downloaded(full_href):
-                print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
-                print("-> Skipping new backup creation and using existing backup.")
+            existing_file = self.is_already_downloaded(full_href)
+            if existing_file:
+                print(f"-> Backup with the same UUID already exists locally as \"{existing_file}\". Not downloading.")
                 return full_href
+            print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
+            print("-> Skipping new backup creation and using existing backup.")
+            return full_href
 
         # ---- Attachments checkbox ----
         include = str(self.config.get("INCLUDE_ATTACHMENTS", "false")).lower() == "true"
@@ -386,10 +392,13 @@ class PlaywrightAtlassian(Atlassian):
         except RuntimeError:
             if pre_click_href:
                 full_href = pre_click_href if pre_click_href.startswith("http") else f"https://{host}{pre_click_href}"
-                if not self.is_already_downloaded(full_href):
-                    print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
-                    print("-> Using existing backup instead of creating a new one.")
+                existing_file = self.is_already_downloaded(full_href)
+                if existing_file:
+                    print(f"-> Backup with the same UUID already exists locally as \"{existing_file}\". Not downloading.")
                     return full_href
+                print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
+                print("-> Using existing backup instead of creating a new one.")
+                return full_href
             api_url = self.get_existing_jira_backup()
             if api_url:
                 print(f"-> Found existing Jira backup via REST API: {api_url}")
@@ -467,10 +476,13 @@ class PlaywrightAtlassian(Atlassian):
         except RuntimeError:
             if existing_href:
                 full_existing_href = existing_href if existing_href.startswith("http") else f"https://{host}{existing_href}"
-                if not self.is_already_downloaded(full_existing_href):
-                    print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
-                    print("-> Using existing backup instead of creating a new one.")
+                existing_file = self.is_already_downloaded(full_existing_href)
+                if existing_file:
+                    print(f"-> Backup with the same UUID already exists locally as \"{existing_file}\". Not downloading.")
                     return full_existing_href
+                print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
+                print("-> Using existing backup instead of creating a new one.")
+                return full_existing_href
             raise
 
         # ---- Check for an existing backup we haven't downloaded yet ----
@@ -480,10 +492,13 @@ class PlaywrightAtlassian(Atlassian):
         # created a backup via the web UI).
         if self.config.get("CHECK_EXISTING_BACKUP", False) and existing_href:
             full_existing_href = existing_href if existing_href.startswith("http") else f"https://{host}{existing_href}"
-            if not self.is_already_downloaded(full_existing_href):
-                print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
-                print("-> Skipping new backup creation and using existing backup.")
+            existing_file = self.is_already_downloaded(full_existing_href)
+            if existing_file:
+                print(f"-> Backup with the same UUID already exists locally as \"{existing_file}\". Not downloading.")
                 return full_existing_href
+            print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
+            print("-> Skipping new backup creation and using existing backup.")
+            return full_existing_href
 
         # ---- Click "Create backup for cloud" (id="submit") ----
         try:
@@ -497,10 +512,13 @@ class PlaywrightAtlassian(Atlassian):
         except RuntimeError:
             if existing_href:
                 full_existing_href = existing_href if existing_href.startswith("http") else f"https://{host}{existing_href}"
-                if not self.is_already_downloaded(full_existing_href):
-                    print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
-                    print("-> Using existing backup instead of creating a new one.")
+                existing_file = self.is_already_downloaded(full_existing_href)
+                if existing_file:
+                    print(f"-> Backup with the same UUID already exists locally as \"{existing_file}\". Not downloading.")
                     return full_existing_href
+                print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
+                print("-> Using existing backup instead of creating a new one.")
+                return full_existing_href
             raise
 
         print("-> Backup process started, waiting for download link…")
