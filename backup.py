@@ -89,7 +89,41 @@ class Atlassian:
         return 'https://{url}/wiki/download/{file_name}'.format(
             url=self.config['HOST_URL'], file_name=self.backup_status['fileName'])
 
+    def get_existing_jira_backup(self):
+        """
+        Check if there is an existing Jira backup that has not been downloaded locally.
+        Returns the backup download URL if one is found and not already present, else None.
+        Intended to detect backups created manually via the web UI.
+        """
+        try:
+            resp = self.session.get(self.get_last_jira_backup)
+            if resp.status_code != 200:
+                return None
+            task_id = resp.text.strip()
+            if not task_id:
+                return None
+            jira_backup_status = 'https://{jira_host}/rest/backup/1/export/getProgress?taskId={task_id}'.format(
+                jira_host=self.config['HOST_URL'], task_id=task_id)
+            status = json.loads(self.session.get(jira_backup_status).text)
+            if 'result' not in status:
+                return None
+            backup_url = '{prefix}/{result_id}'.format(
+                prefix='https://' + self.config['HOST_URL'] + '/plugins/servlet',
+                result_id=status['result'])
+            if not self.is_already_downloaded(backup_url):
+                return backup_url
+        except Exception:
+            pass
+        return None
+
     def create_jira_backup(self):
+        if self.config.get('CHECK_EXISTING_BACKUP', False):
+            existing_url = self.get_existing_jira_backup()
+            if existing_url:
+                print('-> Found existing Jira backup not yet downloaded locally: {}'.format(existing_url))
+                print('-> Skipping new backup creation and using existing backup.')
+                return existing_url
+
         backup = self.session.post(self.start_jira_backup, data=json.dumps(self.payload))
         task_id = ""
 
@@ -432,7 +466,10 @@ if __name__ == '__main__':
     if config['HOST_URL'] == 'something.atlassian.net':
         raise ValueError('You forgot to edit config.yaml or to run the backup script with "-w" flag')
 
-    print('-> Starting backup; include attachments: {}'.format(config['INCLUDE_ATTACHMENTS']))
+    print('-> Starting {} backup on {}; include attachments: {}'.format(
+        'confluence' if args.confluence else 'jira',
+        time.strftime('%Y-%m-%d %H:%M:%S'),
+        config['INCLUDE_ATTACHMENTS']))
 
     use_playwright = args.playwright or config.get('USE_PLAYWRIGHT', False)
     if use_playwright:

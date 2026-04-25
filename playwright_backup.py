@@ -304,6 +304,27 @@ class PlaywrightAtlassian(Atlassian):
             self._do_login_flow(page)
             page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
 
+        # ---- Check for an existing backup we haven't downloaded yet ----
+        # If CHECK_EXISTING_BACKUP is enabled and there is already a download link
+        # on the page pointing to a backup UUID we don't have locally, return that
+        # URL instead of triggering a new backup (covers the case where someone
+        # manually created a backup via the web UI).
+        if self.config.get("CHECK_EXISTING_BACKUP", False):
+            existing_href: str = ""
+            try:
+                existing_locator = page.locator('a[href*="/plugins/servlet/export/"]').first
+                if existing_locator.is_visible(timeout=3_000):
+                    existing_href = existing_locator.get_attribute("href") or ""
+            except Exception:
+                pass
+            if existing_href:
+                if not existing_href.startswith("http"):
+                    existing_href = f"https://{host}{existing_href}"
+                if not self.is_already_downloaded(existing_href):
+                    print(f"-> Found existing Jira backup not yet downloaded locally: {existing_href}")
+                    print("-> Skipping new backup creation and using existing backup.")
+                    return existing_href
+
         # ---- Attachments checkbox ----
         include = str(self.config.get("INCLUDE_ATTACHMENTS", "false")).lower() == "true"
         try:
@@ -388,6 +409,18 @@ class PlaywrightAtlassian(Atlassian):
                 existing_href = existing_locator.get_attribute("href") or ""
         except Exception:
             pass
+
+        # ---- Check for an existing backup we haven't downloaded yet ----
+        # If CHECK_EXISTING_BACKUP is enabled and the page already shows a download
+        # link pointing to a backup UUID we don't have locally, return that URL
+        # instead of triggering a new backup (covers the case where someone manually
+        # created a backup via the web UI).
+        if self.config.get("CHECK_EXISTING_BACKUP", False) and existing_href:
+            full_existing_href = existing_href if existing_href.startswith("http") else f"https://{host}{existing_href}"
+            if not self.is_already_downloaded(full_existing_href):
+                print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
+                print("-> Skipping new backup creation and using existing backup.")
+                return full_existing_href
 
         # ---- Click "Create backup for cloud" (id="submit") ----
         try:
