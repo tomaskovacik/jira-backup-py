@@ -347,7 +347,27 @@ class PlaywrightAtlassian(Atlassian):
             # Fallback: first submit button on the page
             page.locator('input[type="submit"], button[type="submit"]').first.click()
 
-        self._check_backup_rate_limit(page)
+        try:
+            self._check_backup_rate_limit(page)
+        except RuntimeError as rate_limit_err:
+            # Rate-limited after clicking: look for an existing backup link on the
+            # page that we have not downloaded yet and use it instead of failing.
+            fallback_href: str = ""
+            try:
+                fallback_locator = page.locator('a[href*="/plugins/servlet/export/"]').first
+                if fallback_locator.is_visible(timeout=3_000):
+                    fallback_href = fallback_locator.get_attribute("href") or ""
+            except Exception:
+                pass
+            if fallback_href:
+                if not fallback_href.startswith("http"):
+                    fallback_href = f"https://{host}{fallback_href}"
+                if not self.is_already_downloaded(fallback_href):
+                    print(f"-> Found existing Jira backup not yet downloaded locally: {fallback_href}")
+                    print("-> Using existing backup instead of creating a new one.")
+                    return fallback_href
+            raise
+
         print("-> Backup process started, waiting for download link…")
 
         # ---- Wait for download link to become visible ----
@@ -429,7 +449,19 @@ class PlaywrightAtlassian(Atlassian):
             # Fallback: match by value attribute
             page.locator('input[value="Create backup for cloud"]').click()
 
-        self._check_backup_rate_limit(page)
+        try:
+            self._check_backup_rate_limit(page)
+        except RuntimeError as rate_limit_err:
+            # Rate-limited after clicking: if we already captured a download link
+            # before the click and it has not been downloaded locally, use it.
+            if existing_href:
+                full_existing_href = existing_href if existing_href.startswith("http") else f"https://{host}{existing_href}"
+                if not self.is_already_downloaded(full_existing_href):
+                    print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
+                    print("-> Using existing backup instead of creating a new one.")
+                    return full_existing_href
+            raise
+
         print("-> Backup process started, waiting for download link…")
 
         # ---- Wait at least _CONFLUENCE_BACKUP_INITIAL_WAIT s before polling so
