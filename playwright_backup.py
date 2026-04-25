@@ -328,6 +328,13 @@ class PlaywrightAtlassian(Atlassian):
                     print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
                     print("-> Using existing backup instead of creating a new one.")
                     return full_href
+            # The Jira export page does not always render a visible download link
+            # when rate-limited.  Fall back to the REST API to locate the last backup.
+            api_url = self.get_existing_jira_backup()
+            if api_url:
+                print(f"-> Found existing Jira backup via REST API: {api_url}")
+                print("-> Using existing backup instead of creating a new one.")
+                return api_url
             raise
 
         # ---- Check for an existing backup we haven't downloaded yet ----
@@ -373,6 +380,11 @@ class PlaywrightAtlassian(Atlassian):
                     print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
                     print("-> Using existing backup instead of creating a new one.")
                     return full_href
+            api_url = self.get_existing_jira_backup()
+            if api_url:
+                print(f"-> Found existing Jira backup via REST API: {api_url}")
+                print("-> Using existing backup instead of creating a new one.")
+                return api_url
             raise
 
         print("-> Backup process started, waiting for download link…")
@@ -541,7 +553,9 @@ class PlaywrightAtlassian(Atlassian):
             "sorry",
             "backup frequency is limited",
             "you can not make another backup",
+            "you cannot make another backup",
             "approximate time till next allowed backup",
+            "approximate time until next allowed backup",
         ]
 
         try:
