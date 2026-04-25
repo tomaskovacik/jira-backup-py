@@ -4,6 +4,7 @@ USER_EMAIL: "email address for the Atlassian account you're using to create the 
 API_TOKEN: "token ID generated at https://id.atlassian.com/manage/api-tokens"
 INCLUDE_ATTACHMENTS: "include attachments? this will make the backup size bigger - true / false"
 DOWNLOAD_LOCALLY: "download the backup file to backups folder? true / false"
+CHECK_EXISTING_BACKUP: false
 USE_PLAYWRIGHT: false
 PLAYWRIGHT_HEADLESS: true
 PLAYWRIGHT_MFA_TIMEOUT: 120

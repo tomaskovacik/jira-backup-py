@@ -304,6 +304,61 @@ class PlaywrightAtlassian(Atlassian):
             self._do_login_flow(page)
             page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
 
+        # ---- Wait for the page JS to finish rendering ----
+        # The Jira export page renders the previous backup download link via
+        # JavaScript *after* the initial HTML load event fires.  Give it 10 s to
+        # appear before we try to read it, otherwise we may capture an empty link
+        # and lose the fallback URL we need when the site is rate-limited.
+        print("-> Waiting 10 s for page to render existing backup link…")
+        time.sleep(10)
+
+        # ---- Pre-click: read any existing backup link already on the page ----
+        # We always capture this before touching the button so we can fall back to
+        # it both for CHECK_EXISTING_BACKUP and for rate-limit recovery below.
+        pre_click_href: str = ""
+        try:
+            pre_click_locator = page.locator('a[href*="/plugins/servlet/export/"]').first
+            if pre_click_locator.is_visible(timeout=10_000):
+                pre_click_href = pre_click_locator.get_attribute("href") or ""
+                if pre_click_href:
+                    print(f"-> Existing backup link found on page: {pre_click_href}")
+        except Exception:
+            pass
+
+        # ---- Pre-click: check for a rate-limit message already on the page ----
+        # Atlassian shows the rate-limit banner as soon as the export page loads
+        # when a recent backup already exists; we must handle it before clicking.
+        try:
+            self._check_backup_rate_limit(page, wait_ms=0)
+        except RuntimeError:
+            # Page is already rate-limited – use the existing link if available.
+            if pre_click_href:
+                full_href = pre_click_href if pre_click_href.startswith("http") else f"https://{host}{pre_click_href}"
+                if not self.is_already_downloaded(full_href):
+                    print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
+                    print("-> Using existing backup instead of creating a new one.")
+                    return full_href
+            # The Jira export page does not always render a visible download link
+            # when rate-limited.  Fall back to the REST API to locate the last backup.
+            api_url = self.get_existing_jira_backup()
+            if api_url:
+                print(f"-> Found existing Jira backup via REST API: {api_url}")
+                print("-> Using existing backup instead of creating a new one.")
+                return api_url
+            raise
+
+        # ---- Check for an existing backup we haven't downloaded yet ----
+        # If CHECK_EXISTING_BACKUP is enabled and there is already a download link
+        # on the page pointing to a backup UUID we don't have locally, return that
+        # URL instead of triggering a new backup (covers the case where someone
+        # manually created a backup via the web UI).
+        if self.config.get("CHECK_EXISTING_BACKUP", False) and pre_click_href:
+            full_href = pre_click_href if pre_click_href.startswith("http") else f"https://{host}{pre_click_href}"
+            if not self.is_already_downloaded(full_href):
+                print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
+                print("-> Skipping new backup creation and using existing backup.")
+                return full_href
+
         # ---- Attachments checkbox ----
         include = str(self.config.get("INCLUDE_ATTACHMENTS", "false")).lower() == "true"
         try:
@@ -326,7 +381,22 @@ class PlaywrightAtlassian(Atlassian):
             # Fallback: first submit button on the page
             page.locator('input[type="submit"], button[type="submit"]').first.click()
 
-        self._check_backup_rate_limit(page)
+        try:
+            self._check_backup_rate_limit(page)
+        except RuntimeError:
+            if pre_click_href:
+                full_href = pre_click_href if pre_click_href.startswith("http") else f"https://{host}{pre_click_href}"
+                if not self.is_already_downloaded(full_href):
+                    print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
+                    print("-> Using existing backup instead of creating a new one.")
+                    return full_href
+            api_url = self.get_existing_jira_backup()
+            if api_url:
+                print(f"-> Found existing Jira backup via REST API: {api_url}")
+                print("-> Using existing backup instead of creating a new one.")
+                return api_url
+            raise
+
         print("-> Backup process started, waiting for download link…")
 
         # ---- Wait for download link to become visible ----
@@ -389,6 +459,32 @@ class PlaywrightAtlassian(Atlassian):
         except Exception:
             pass
 
+        # ---- Pre-click: check for a rate-limit message already on the page ----
+        # Atlassian shows the rate-limit banner on page load when a recent backup
+        # exists; handle it here so we don't needlessly click the button.
+        try:
+            self._check_backup_rate_limit(page, wait_ms=0)
+        except RuntimeError:
+            if existing_href:
+                full_existing_href = existing_href if existing_href.startswith("http") else f"https://{host}{existing_href}"
+                if not self.is_already_downloaded(full_existing_href):
+                    print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
+                    print("-> Using existing backup instead of creating a new one.")
+                    return full_existing_href
+            raise
+
+        # ---- Check for an existing backup we haven't downloaded yet ----
+        # If CHECK_EXISTING_BACKUP is enabled and the page already shows a download
+        # link pointing to a backup UUID we don't have locally, return that URL
+        # instead of triggering a new backup (covers the case where someone manually
+        # created a backup via the web UI).
+        if self.config.get("CHECK_EXISTING_BACKUP", False) and existing_href:
+            full_existing_href = existing_href if existing_href.startswith("http") else f"https://{host}{existing_href}"
+            if not self.is_already_downloaded(full_existing_href):
+                print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
+                print("-> Skipping new backup creation and using existing backup.")
+                return full_existing_href
+
         # ---- Click "Create backup for cloud" (id="submit") ----
         try:
             page.locator('#submit').click(timeout=15_000)
@@ -396,7 +492,17 @@ class PlaywrightAtlassian(Atlassian):
             # Fallback: match by value attribute
             page.locator('input[value="Create backup for cloud"]').click()
 
-        self._check_backup_rate_limit(page)
+        try:
+            self._check_backup_rate_limit(page)
+        except RuntimeError:
+            if existing_href:
+                full_existing_href = existing_href if existing_href.startswith("http") else f"https://{host}{existing_href}"
+                if not self.is_already_downloaded(full_existing_href):
+                    print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
+                    print("-> Using existing backup instead of creating a new one.")
+                    return full_existing_href
+            raise
+
         print("-> Backup process started, waiting for download link…")
 
         # ---- Wait at least _CONFLUENCE_BACKUP_INITIAL_WAIT s before polling so
@@ -435,8 +541,12 @@ class PlaywrightAtlassian(Atlassian):
     def _check_backup_rate_limit(self, page, wait_ms: int = 3_000) -> None:
         """Detect and surface the Atlassian backup-frequency rate-limit message.
 
-        After a backup button is clicked Atlassian may display a message of the
-        form::
+        Can be called either immediately after page load (pass ``wait_ms=0``) to
+        detect a rate-limit banner that Atlassian renders without any user action,
+        or after a backup button is clicked (default ``wait_ms=3000``) to give the
+        page time to render the banner.
+
+        The message looks like::
 
             Sorry
             Backup frequency is limited. You can not make another backup right
@@ -453,7 +563,9 @@ class PlaywrightAtlassian(Atlassian):
             "sorry",
             "backup frequency is limited",
             "you can not make another backup",
+            "you cannot make another backup",
             "approximate time till next allowed backup",
+            "approximate time until next allowed backup",
         ]
 
         try:
