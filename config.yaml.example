@@ -28,3 +28,6 @@ UPLOAD_TO_AZURE:
     AZURE_DIR: "Azure directory for upload (example Atlassian/)"
     AZURE_CONNECTION_STRING: "Azure storage connection string (optional if using account key)"
     AZURE_ACCOUNT_KEY: "Azure storage account key (optional if using connection string)"
+RETENTION:
+    KEEP_LAST: "keep only the N most-recent backup files per backup type (omit or leave empty to disable)"
+    KEEP_DAYS: "delete backups older than N calendar days per backup type (omit or leave empty to disable)"

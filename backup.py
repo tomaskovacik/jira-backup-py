@@ -3,6 +3,7 @@ import yaml
 import time
 import os
 import re
+import datetime
 import argparse
 import requests
 import boto3
@@ -329,6 +330,171 @@ class Atlassian:
                 overwrite=True
             )
 
+    def _get_retention_settings(self):
+        """Return (keep_last, keep_days) from config, or (None, None) if retention is not configured."""
+        retention = self.config.get('RETENTION') or {}
+        keep_last = int(retention['KEEP_LAST']) if retention.get('KEEP_LAST') is not None else None
+        keep_days = int(retention['KEEP_DAYS']) if retention.get('KEEP_DAYS') is not None else None
+        return keep_last, keep_days
+
+    def _compute_retention_deletions(self, items, timestamps):
+        """
+        Return the subset of items that should be deleted according to RETENTION policy.
+
+        ``items`` must be pre-sorted newest-first; ``timestamps`` must be a parallel
+        list of timezone-aware UTC datetimes.  KEEP_LAST and KEEP_DAYS are applied as
+        a union: an item is deleted when *either* limit is exceeded.
+        """
+        keep_last, keep_days = self._get_retention_settings()
+        if keep_last is None and keep_days is None:
+            return []
+
+        to_delete = []
+
+        if keep_last is not None:
+            to_delete.extend(items[keep_last:])
+
+        if keep_days is not None:
+            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=keep_days)
+            for item, ts in zip(items, timestamps):
+                if item not in to_delete and ts < cutoff:
+                    to_delete.append(item)
+
+        return to_delete
+
+    def apply_local_retention(self, backup_type, dry_run=False):
+        """Delete old local backup files according to RETENTION policy."""
+        keep_last, keep_days = self._get_retention_settings()
+        if keep_last is None and keep_days is None:
+            return
+
+        backups_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups')
+        if not os.path.isdir(backups_dir):
+            return
+
+        files = [
+            f for f in os.listdir(backups_dir)
+            if f.lower().startswith(backup_type.lower()) and os.path.isfile(os.path.join(backups_dir, f))
+        ]
+        files.sort(key=lambda f: os.path.getmtime(os.path.join(backups_dir, f)), reverse=True)
+
+        timestamps = [
+            datetime.datetime.fromtimestamp(
+                os.path.getmtime(os.path.join(backups_dir, f)), tz=datetime.timezone.utc
+            )
+            for f in files
+        ]
+
+        for f in self._compute_retention_deletions(files, timestamps):
+            file_path = os.path.join(backups_dir, f)
+            if dry_run:
+                print('-> [dry-run] Would delete local backup: {}'.format(file_path))
+            else:
+                print('-> Deleting old local backup: {}'.format(file_path))
+                os.remove(file_path)
+
+    def apply_s3_retention(self, backup_type, dry_run=False):
+        """Delete old S3 backup objects according to RETENTION policy."""
+        keep_last, keep_days = self._get_retention_settings()
+        if keep_last is None and keep_days is None:
+            return
+
+        if self.config['UPLOAD_TO_S3']['AWS_ACCESS_KEY'] == '':
+            s3_client = boto3.client('s3')
+        else:
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=self.config['UPLOAD_TO_S3']['AWS_ACCESS_KEY'],
+                aws_secret_access_key=self.config['UPLOAD_TO_S3']['AWS_SECRET_KEY'],
+                region_name=self.config['UPLOAD_TO_S3']['AWS_REGION'],
+                endpoint_url=self.config['UPLOAD_TO_S3']['AWS_ENDPOINT_URL'],
+                use_ssl=self.config['UPLOAD_TO_S3']['AWS_IS_SECURE']
+            )
+
+        bucket_name = self.config['UPLOAD_TO_S3']['S3_BUCKET']
+        prefix = self.config['UPLOAD_TO_S3']['S3_DIR'] + backup_type.lower()
+
+        paginator = s3_client.get_paginator('list_objects_v2')
+        objects = []
+        for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+            objects.extend(page.get('Contents', []))
+
+        objects.sort(key=lambda o: o['LastModified'], reverse=True)
+        timestamps = [o['LastModified'] for o in objects]
+
+        for obj in self._compute_retention_deletions(objects, timestamps):
+            key = obj['Key']
+            if dry_run:
+                print('-> [dry-run] Would delete S3 object: s3://{}/{}'.format(bucket_name, key))
+            else:
+                print('-> Deleting old S3 backup: s3://{}/{}'.format(bucket_name, key))
+                s3_client.delete_object(Bucket=bucket_name, Key=key)
+
+    def apply_gcs_retention(self, backup_type, dry_run=False):
+        """Delete old GCS backup blobs according to RETENTION policy."""
+        keep_last, keep_days = self._get_retention_settings()
+        if keep_last is None and keep_days is None:
+            return
+
+        if self.config['UPLOAD_TO_GCP']['GCP_SERVICE_ACCOUNT_KEY']:
+            client = storage.Client.from_service_account_json(
+                self.config['UPLOAD_TO_GCP']['GCP_SERVICE_ACCOUNT_KEY'],
+                project=self.config['UPLOAD_TO_GCP']['GCP_PROJECT_ID']
+            )
+        else:
+            client = storage.Client(project=self.config['UPLOAD_TO_GCP']['GCP_PROJECT_ID'])
+
+        bucket_name = self.config['UPLOAD_TO_GCP']['GCS_BUCKET']
+        prefix = self.config['UPLOAD_TO_GCP']['GCS_DIR'] + backup_type.lower()
+
+        blobs = list(client.list_blobs(bucket_name, prefix=prefix))
+        blobs.sort(key=lambda b: b.time_created, reverse=True)
+        timestamps = [b.time_created for b in blobs]
+
+        for blob in self._compute_retention_deletions(blobs, timestamps):
+            if dry_run:
+                print('-> [dry-run] Would delete GCS blob: gs://{}/{}'.format(bucket_name, blob.name))
+            else:
+                print('-> Deleting old GCS backup: gs://{}/{}'.format(bucket_name, blob.name))
+                blob.delete()
+
+    def apply_azure_retention(self, backup_type, dry_run=False):
+        """Delete old Azure Blob Storage backups according to RETENTION policy."""
+        keep_last, keep_days = self._get_retention_settings()
+        if keep_last is None and keep_days is None:
+            return
+
+        if self.config['UPLOAD_TO_AZURE']['AZURE_CONNECTION_STRING']:
+            blob_service_client = BlobServiceClient.from_connection_string(
+                self.config['UPLOAD_TO_AZURE']['AZURE_CONNECTION_STRING']
+            )
+        else:
+            account_url = 'https://{}.blob.core.windows.net'.format(
+                self.config['UPLOAD_TO_AZURE']['AZURE_ACCOUNT_NAME']
+            )
+            blob_service_client = BlobServiceClient(
+                account_url=account_url,
+                credential=self.config['UPLOAD_TO_AZURE']['AZURE_ACCOUNT_KEY']
+            )
+
+        container_name = self.config['UPLOAD_TO_AZURE']['AZURE_CONTAINER']
+        prefix = self.config['UPLOAD_TO_AZURE']['AZURE_DIR'] + backup_type.lower()
+
+        container_client = blob_service_client.get_container_client(container_name)
+        blobs = list(container_client.list_blobs(name_starts_with=prefix))
+        blobs.sort(key=lambda b: b['last_modified'], reverse=True)
+        timestamps = [b['last_modified'] for b in blobs]
+
+        for blob in self._compute_retention_deletions(blobs, timestamps):
+            blob_name = blob['name']
+            if dry_run:
+                print('-> [dry-run] Would delete Azure blob: {}/{}'.format(container_name, blob_name))
+            else:
+                print('-> Deleting old Azure backup: {}/{}'.format(container_name, blob_name))
+                blob_service_client.get_blob_client(
+                    container=container_name, blob=blob_name
+                ).delete_blob()
+
 
 def setup_scheduled_task(frequency_days=4, time_hour=10, time_minute=0, service_type='jira'):
     script_path = os.path.abspath(__file__)
@@ -431,6 +597,7 @@ if __name__ == '__main__':
     parser.add_argument('--schedule-days', type=int, default=4, help='frequency in days for scheduled backup (default: 4)')
     parser.add_argument('--schedule-time', type=str, default='10:00', help='time for scheduled backup in HH:MM format (default: 10:00)')
     parser.add_argument('--schedule-service', type=str, choices=['jira', 'confluence'], default='jira', help='service type for scheduled backup (default: jira)')
+    parser.add_argument('--dry-run', action='store_true', dest='dry_run', help='show which backups would be deleted by retention policy without actually deleting them')
     args = parser.parse_args()
     # print('debug command-line: {}'.format(args))
     
@@ -508,3 +675,14 @@ if __name__ == '__main__':
         
         if 'UPLOAD_TO_AZURE' in config and config['UPLOAD_TO_AZURE'].get('AZURE_CONTAINER', '') != '':
             atlass.stream_to_azure(backup_url, file_name)
+
+    if config.get('RETENTION'):
+        dry_run = args.dry_run
+        if config['DOWNLOAD_LOCALLY'] == 'true':
+            atlass.apply_local_retention(backup_type, dry_run=dry_run)
+        if 'UPLOAD_TO_S3' in config and config['UPLOAD_TO_S3'].get('S3_BUCKET', '') != '':
+            atlass.apply_s3_retention(backup_type, dry_run=dry_run)
+        if 'UPLOAD_TO_GCP' in config and config['UPLOAD_TO_GCP'].get('GCS_BUCKET', '') != '':
+            atlass.apply_gcs_retention(backup_type, dry_run=dry_run)
+        if 'UPLOAD_TO_AZURE' in config and config['UPLOAD_TO_AZURE'].get('AZURE_CONTAINER', '') != '':
+            atlass.apply_azure_retention(backup_type, dry_run=dry_run)
