@@ -101,6 +101,13 @@ UPLOAD_TO_AZURE:
 CUSTOM_FILENAME:
   JIRA: "jira.{timestamp}"
   CONFLUENCE: "confluence.{timestamp}"
+
+# Backup Retention Policy (optional)
+# Applies to local backups and all configured cloud storage providers.
+# Retention is evaluated per backup type (jira / confluence) after each run.
+RETENTION:
+  KEEP_LAST: 7     # keep only the 7 most-recent backup files; omit to disable
+  KEEP_DAYS: 30    # delete backups older than 30 days; omit to disable
 ```
 
 ### Playwright Web UI Mode
@@ -189,6 +196,7 @@ This will create:
 | `--schedule-days` | Frequency in days for scheduled backup (default: 4) |
 | `--schedule-time` | Time for scheduled backup in HH:MM format (default: 10:00) |
 | `--schedule-service` | Service for scheduled backup (jira/confluence, default: jira) |
+| `--dry-run` | Show which backups would be deleted by the retention policy without actually deleting them |
 
 ## 🔧 Advanced Configuration
 
@@ -225,12 +233,38 @@ UPLOAD_TO_AZURE:
   # ... Azure config
 ```
 
+### Backup Retention
+
+Add an optional `RETENTION` section to `config.yaml` to automatically delete old backups after each run. Both keys are independent and can be used together or separately:
+
+| Key | Description |
+|-----|-------------|
+| `KEEP_LAST` | Keep only the N most-recent backup files per backup type |
+| `KEEP_DAYS` | Delete backups older than N calendar days per backup type |
+
+Retention applies to **local backups** (`backups/` directory) and all configured **cloud storage providers** (S3, GCS, Azure) simultaneously.
+
+```yaml
+RETENTION:
+  KEEP_LAST: 7     # keep only the 7 most-recent backups
+  KEEP_DAYS: 30    # also delete anything older than 30 days
+```
+
+Omit either key (or the entire section) to disable that check.
+
+**Preview what would be deleted without removing anything:**
+
+```bash
+python backup.py -j --dry-run
+```
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
 
 ## 📝 Changelog
 
+- **2026-05-06**: Added backup retention policy (KEEP_LAST / KEEP_DAYS) for local and cloud storage, with --dry-run support
 - **2026-04-21**: Added Playwright web UI mode as a fallback backup driver
 - **2025-06-24**: Added separate cron schedules for Jira and Confluence backups
 - **2025-06-24**: Made cloud storage configuration sections optional
