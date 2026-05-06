@@ -15,6 +15,10 @@ import platform
 import subprocess
 import sys
 import urllib3
+import zipfile
+import shutil
+import tempfile
+import shlex
 
 
 def read_config(path=''):
@@ -329,6 +333,75 @@ class Atlassian:
                 overwrite=True
             )
 
+    @staticmethod
+    def _extract_zip(zip_path, extract_dir):
+        """Extract a zip archive to extract_dir."""
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            zf.extractall(extract_dir)
+
+    def backup_to_restic(self, zip_path, label):
+        """
+        Extract zip_path to a temporary directory and back it up using restic.
+
+        The restic repository is initialised automatically if it does not exist yet.
+        After the backup, an optional `restic forget --prune` is run when
+        RESTIC_FORGET_ARGS is set.  The temporary extract directory is always
+        removed.  The original zip file is removed unless RESTIC_KEEP_ZIP is true.
+        """
+        restic_cfg = self.config.get('UPLOAD_TO_RESTIC', {})
+        restic_repo = restic_cfg.get('RESTIC_REPO', '').strip()
+        if not restic_repo:
+            print('-> UPLOAD_TO_RESTIC.RESTIC_REPO is not set; skipping restic backup')
+            return
+
+        # Build the environment for all restic calls.
+        env = os.environ.copy()
+        env['RESTIC_REPOSITORY'] = restic_repo
+        restic_password = restic_cfg.get('RESTIC_PASSWORD', '').strip()
+        if restic_password:
+            env['RESTIC_PASSWORD'] = restic_password
+
+        # Initialise the repository if it has not been set up yet.
+        check = subprocess.run(['restic', 'snapshots'], env=env,
+                               capture_output=True)
+        if check.returncode != 0:
+            print('-> Restic repository not found; initialising...')
+            init_result = subprocess.run(['restic', 'init'], env=env)
+            if init_result.returncode != 0:
+                raise Exception('restic init failed with exit code {}'.format(init_result.returncode))
+
+        extract_dir = tempfile.mkdtemp(prefix='restic_extract_')
+        try:
+            print('-> Extracting {} to {}'.format(zip_path, extract_dir))
+            self._extract_zip(zip_path, extract_dir)
+
+            # Build `restic backup` command.
+            cmd = ['restic', 'backup', extract_dir, '--tag', label]
+            extra_args = restic_cfg.get('RESTIC_EXTRA_ARGS', '').strip()
+            if extra_args:
+                cmd.extend(shlex.split(extra_args))
+
+            print('-> Running: {}'.format(' '.join(cmd)))
+            result = subprocess.run(cmd, env=env)
+            if result.returncode != 0:
+                raise Exception('restic backup failed with exit code {}'.format(result.returncode))
+
+            # Optional forget/prune pass.
+            forget_args = restic_cfg.get('RESTIC_FORGET_ARGS', '').strip()
+            if forget_args:
+                forget_cmd = ['restic', 'forget', '--prune'] + shlex.split(forget_args)
+                print('-> Running: {}'.format(' '.join(forget_cmd)))
+                subprocess.run(forget_cmd, env=env)
+
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+
+        # Remove original zip unless the user wants to keep it.
+        keep_zip = restic_cfg.get('RESTIC_KEEP_ZIP', False)
+        if not keep_zip and os.path.exists(zip_path):
+            os.remove(zip_path)
+            print('-> Removed original zip: {}'.format(zip_path))
+
 
 def setup_scheduled_task(frequency_days=4, time_hour=10, time_minute=0, service_type='jira'):
     script_path = os.path.abspath(__file__)
@@ -508,3 +581,10 @@ if __name__ == '__main__':
         
         if 'UPLOAD_TO_AZURE' in config and config['UPLOAD_TO_AZURE'].get('AZURE_CONTAINER', '') != '':
             atlass.stream_to_azure(backup_url, file_name)
+
+        if 'UPLOAD_TO_RESTIC' in config and config['UPLOAD_TO_RESTIC'].get('RESTIC_REPO', '') != '':
+            if config.get('DOWNLOAD_LOCALLY') != 'true':
+                print('-> WARNING: UPLOAD_TO_RESTIC requires DOWNLOAD_LOCALLY: true; skipping restic backup')
+            else:
+                zip_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', file_name)
+                atlass.backup_to_restic(zip_path, file_name)

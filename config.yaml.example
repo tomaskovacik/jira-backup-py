@@ -28,3 +28,9 @@ UPLOAD_TO_AZURE:
     AZURE_DIR: "Azure directory for upload (example Atlassian/)"
     AZURE_CONNECTION_STRING: "Azure storage connection string (optional if using account key)"
     AZURE_ACCOUNT_KEY: "Azure storage account key (optional if using connection string)"
+UPLOAD_TO_RESTIC:
+    RESTIC_REPO: "restic repository path or URI (e.g. /backups/restic, s3:s3.amazonaws.com/bucket, sftp:user@host:/path)"
+    RESTIC_PASSWORD: "restic repository encryption password (leave empty to use RESTIC_PASSWORD_FILE / RESTIC_PASSWORD_COMMAND env vars)"
+    RESTIC_EXTRA_ARGS: "optional extra arguments passed verbatim to 'restic backup' (e.g. --verbose)"
+    RESTIC_KEEP_ZIP: false
+    RESTIC_FORGET_ARGS: "optional arguments for 'restic forget --prune' run after each backup (e.g. --keep-last 7 --keep-weekly 4)"

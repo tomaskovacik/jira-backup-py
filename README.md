@@ -225,12 +225,105 @@ UPLOAD_TO_AZURE:
   # ... Azure config
 ```
 
+## 🗄️ Restic Integration
+
+[Restic](https://restic.net/) is a fast, secure, and efficient backup program.  Because it uses
+content-defined chunking and deduplication it works best on **raw file trees**, not opaque zip
+blobs.  This integration automatically **extracts** the Atlassian zip archive before handing it
+to restic, so you get full deduplication across snapshots (e.g. unchanged attachments are stored
+only once).
+
+### Why extract first?
+
+A zip file looks like a single opaque binary to restic.  Even a tiny change in the Atlassian
+data causes the entire zip to appear "new", wasting storage and negating deduplication.  By
+extracting the files first, restic can deduplicate at the individual-file and block level.
+
+### Prerequisites
+
+Install restic on the system running the backup script:
+
+```bash
+# Debian / Ubuntu
+apt install restic
+
+# macOS
+brew install restic
+
+# Manual (all platforms)
+# Download the binary from https://github.com/restic/restic/releases
+```
+
+### Configuration
+
+Add an `UPLOAD_TO_RESTIC` section to `config.yaml`.  `DOWNLOAD_LOCALLY: true` is also required
+because restic reads the zip from the local `backups/` directory.
+
+```yaml
+DOWNLOAD_LOCALLY: true
+
+UPLOAD_TO_RESTIC:
+  # Any restic backend URI is accepted.
+  # Examples:
+  #   local path:   /backups/restic
+  #   S3:           s3:s3.amazonaws.com/my-bucket/restic
+  #   SFTP:         sftp:user@host:/backups/restic
+  #   Backblaze B2: b2:my-bucket:restic
+  #   Azure:        azure:my-container:/restic
+  #   GCS:          gs:my-bucket:/restic
+  RESTIC_REPO: "/path/to/restic-repo"
+
+  # Encryption password for the repository.
+  # Leave empty to rely on the RESTIC_PASSWORD_FILE or
+  # RESTIC_PASSWORD_COMMAND environment variables instead.
+  RESTIC_PASSWORD: "your-strong-password"
+
+  # Optional: extra flags passed verbatim to 'restic backup'
+  # e.g. "--verbose --exclude '*.log'"
+  RESTIC_EXTRA_ARGS: ""
+
+  # Keep the original .zip after the restic backup (default: false)
+  RESTIC_KEEP_ZIP: false
+
+  # Optional: run 'restic forget --prune' after each backup.
+  # e.g. "--keep-last 7 --keep-weekly 4 --keep-monthly 3"
+  RESTIC_FORGET_ARGS: ""
+```
+
+### Supported backends
+
+Restic natively supports many backends — no additional Python packages are required:
+
+| Backend | URI prefix |
+|---------|------------|
+| Local filesystem | `/path/to/repo` or `file:/path/to/repo` |
+| SFTP | `sftp:user@host:/path` |
+| Amazon S3 / Minio / Wasabi | `s3:s3.amazonaws.com/bucket` |
+| Backblaze B2 | `b2:bucket-name:path` |
+| Azure Blob Storage | `azure:container-name:/path` |
+| Google Cloud Storage | `gs:bucket-name:/path` |
+| OpenStack Swift | `swift:container-name:/path` |
+| rclone | `rclone:remote:path` |
+
+Refer to the [restic documentation](https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html)
+for backend-specific environment variables (credentials, endpoints, etc.).
+
+### Retention / pruning
+
+Pass forget flags via `RESTIC_FORGET_ARGS` to clean up old snapshots automatically after each
+run.  Example — keep the last 7 daily snapshots, 4 weekly, and 3 monthly:
+
+```yaml
+RESTIC_FORGET_ARGS: "--keep-last 7 --keep-weekly 4 --keep-monthly 3"
+```
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
 
 ## 📝 Changelog
 
+- **2026-05-06**: Added restic integration — extract zip and back up with restic for deduplication
 - **2026-04-21**: Added Playwright web UI mode as a fallback backup driver
 - **2025-06-24**: Added separate cron schedules for Jira and Confluence backups
 - **2025-06-24**: Made cloud storage configuration sections optional
