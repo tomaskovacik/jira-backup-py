@@ -391,7 +391,9 @@ class Atlassian:
             if forget_args:
                 forget_cmd = ['restic', 'forget', '--prune'] + shlex.split(forget_args)
                 print('-> Running: {}'.format(' '.join(forget_cmd)))
-                subprocess.run(forget_cmd, env=env)
+                forget_result = subprocess.run(forget_cmd, env=env)
+                if forget_result.returncode != 0:
+                    print('-> WARNING: restic forget --prune failed with exit code {}'.format(forget_result.returncode))
 
         finally:
             shutil.rmtree(extract_dir, ignore_errors=True)
