@@ -11,6 +11,7 @@ A Python-based backup tool for Atlassian Cloud Jira and Confluence instances wit
 - **Jira & Confluence Backups**: Create backups for both Jira and Confluence Cloud instances
 - **Multi-Cloud Support**: Stream backups directly to AWS S3, Google Cloud Storage, or Azure Blob Storage
 - **Local Download**: Option to download backup files locally
+- **Backup Hooks**: Run custom shell commands before/after the backup for notifications, custom upload tools, or any post-processing
 - **Cross-Platform Scheduling**: Automatically create cron jobs (Linux/macOS) or scheduled tasks (Windows)
 - **Configuration Wizard**: Interactive setup for easy configuration
 - **API Token Authentication**: Secure authentication using Atlassian API tokens
@@ -225,6 +226,70 @@ UPLOAD_TO_AZURE:
   # ... Azure config
 ```
 
+## 🪝 Backup Hooks
+
+Hooks let you run arbitrary shell commands at well-defined points in the backup
+lifecycle — useful for notifications, custom upload tools (e.g. `rclone`),
+encryption, or any post-processing you need.
+
+### Hook points
+
+| Key | When it runs |
+|-----|-------------|
+| `PRE_BACKUP` | Before the Atlassian backup API call is made |
+| `POST_DOWNLOAD` | After the zip has been downloaded locally (`DOWNLOAD_LOCALLY: true` required) |
+| `POST_UPLOAD` | After all configured cloud uploads (S3/GCP/Azure/restic) have finished |
+
+### Environment variables passed to every hook
+
+| Variable | Value |
+|----------|-------|
+| `BACKUP_TYPE` | `jira` or `confluence` |
+| `BACKUP_DATE` | Date the backup was started (`YYYY-MM-DD`) |
+| `BACKUP_FILE` | Absolute path to the local zip file (empty for `PRE_BACKUP` and when `DOWNLOAD_LOCALLY` is false) |
+| `BACKUP_URL` | Atlassian download URL (empty for `PRE_BACKUP`) |
+| `BACKUP_FILENAME` | Basename of the zip file (empty for `PRE_BACKUP`) |
+
+### Configuration
+
+```yaml
+HOOKS:
+  # Run before the Atlassian API call
+  PRE_BACKUP: ""
+
+  # Run after the zip is saved locally (requires DOWNLOAD_LOCALLY: true)
+  POST_DOWNLOAD: "/opt/scripts/restic_backup.sh"
+
+  # Run after all cloud uploads finish
+  POST_UPLOAD: "curl -s -X POST https://hooks.slack.com/... -d '{\"text\":\"Backup done: $BACKUP_FILENAME\"}'"
+```
+
+Commands are executed through the system shell, so pipes, variable expansion,
+and redirects all work.  If a hook exits with a non-zero code, the backup run
+is marked as failed.
+
+### Example: restic via hook
+
+Instead of using the built-in `UPLOAD_TO_RESTIC` integration you can call
+restic yourself for maximum flexibility:
+
+```bash
+#!/usr/bin/env bash
+# /opt/scripts/restic_backup.sh
+set -euo pipefail
+export RESTIC_REPOSITORY=/backups/restic
+export RESTIC_PASSWORD=my-strong-password
+
+restic backup "$BACKUP_FILE" --tag "$BACKUP_FILENAME"
+restic forget --prune --keep-last 7 --keep-weekly 4
+```
+
+```yaml
+DOWNLOAD_LOCALLY: true
+HOOKS:
+  POST_DOWNLOAD: "/opt/scripts/restic_backup.sh"
+```
+
 ## 🗄️ Restic Integration
 
 [Restic](https://restic.net/) is a fast, secure, and efficient backup program.  Because it uses
@@ -323,6 +388,7 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 
 ## 📝 Changelog
 
+- **2026-05-08**: Added pre/post backup hooks (`PRE_BACKUP`, `POST_DOWNLOAD`, `POST_UPLOAD`)
 - **2026-05-06**: Added restic integration — extract zip and back up with restic for deduplication
 - **2026-04-21**: Added Playwright web UI mode as a fallback backup driver
 - **2025-06-24**: Added separate cron schedules for Jira and Confluence backups

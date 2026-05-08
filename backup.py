@@ -402,6 +402,48 @@ class Atlassian:
             os.remove(zip_path)
             print('-> Removed original zip: {}'.format(zip_path))
 
+    def run_hook(self, hook_name, extra_env=None):
+        """
+        Run a shell command configured under HOOKS.<hook_name> in config.yaml.
+
+        The command is executed through the system shell so that pipes, redirects,
+        and other shell features work as expected.  The following environment
+        variables are always set (in addition to the current process environment)
+        when calling the hook:
+
+        - BACKUP_TYPE    – "jira" or "confluence"
+        - BACKUP_DATE    – current date as YYYY-MM-DD
+        - BACKUP_FILE    – absolute path to the local zip file (empty string when
+                           the file has not been downloaded yet, e.g. PRE_BACKUP)
+        - BACKUP_URL     – Atlassian download URL (empty string for PRE_BACKUP)
+        - BACKUP_FILENAME – basename of the backup file (empty string when not yet
+                            known, e.g. PRE_BACKUP)
+
+        Callers pass additional context via *extra_env*.  If the hook command is
+        empty or the HOOKS section is absent the method is a no-op.  A non-zero
+        exit code raises an exception so that the backup run is clearly marked as
+        failed.
+        """
+        hooks_cfg = self.config.get('HOOKS', {}) or {}
+        cmd = (hooks_cfg.get(hook_name) or '').strip()
+        if not cmd:
+            return
+
+        env = os.environ.copy()
+        # Sensible defaults so every hook always has all variables set.
+        env.setdefault('BACKUP_TYPE', '')
+        env.setdefault('BACKUP_DATE', time.strftime('%Y-%m-%d'))
+        env.setdefault('BACKUP_FILE', '')
+        env.setdefault('BACKUP_URL', '')
+        env.setdefault('BACKUP_FILENAME', '')
+        if extra_env:
+            env.update(extra_env)
+
+        print('-> Running {} hook: {}'.format(hook_name, cmd))
+        result = subprocess.run(cmd, shell=True, env=env)
+        if result.returncode != 0:
+            raise Exception('{} hook failed with exit code {}'.format(hook_name, result.returncode))
+
 
 def setup_scheduled_task(frequency_days=4, time_hour=10, time_minute=0, service_type='jira'):
     script_path = os.path.abspath(__file__)
@@ -553,6 +595,13 @@ if __name__ == '__main__':
         atlass = Atlassian(config)
     
     backup_type = 'confluence' if args.confluence else 'jira'
+    backup_date = time.strftime('%Y-%m-%d')
+
+    atlass.run_hook('PRE_BACKUP', {
+        'BACKUP_TYPE': backup_type,
+        'BACKUP_DATE': backup_date,
+    })
+
     try:
         if args.confluence:
             backup_url = atlass.create_confluence_backup()
@@ -566,12 +615,21 @@ if __name__ == '__main__':
     file_name = atlass.generate_filename(backup_url, backup_type)
     print('-> Generated filename: {}'.format(file_name))
 
+    zip_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', file_name)
+
     existing_file = atlass.is_already_downloaded(backup_url)
     if existing_file:
         print('-> Backup with the same UUID already exists locally as "{}". Skipping download and upload.'.format(existing_file))
     else:
         if config['DOWNLOAD_LOCALLY'] == 'true':
             atlass.download_file(backup_url, file_name)
+            atlass.run_hook('POST_DOWNLOAD', {
+                'BACKUP_TYPE': backup_type,
+                'BACKUP_DATE': backup_date,
+                'BACKUP_FILE': zip_path,
+                'BACKUP_URL': backup_url,
+                'BACKUP_FILENAME': file_name,
+            })
 
         if 'UPLOAD_TO_S3' in config and config['UPLOAD_TO_S3'].get('S3_BUCKET', '') != '':
             atlass.stream_to_s3(backup_url, file_name)
@@ -586,5 +644,12 @@ if __name__ == '__main__':
             if config.get('DOWNLOAD_LOCALLY') != 'true':
                 print('-> WARNING: UPLOAD_TO_RESTIC requires DOWNLOAD_LOCALLY: true; skipping restic backup')
             else:
-                zip_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', file_name)
                 atlass.backup_to_restic(zip_path, file_name)
+
+        atlass.run_hook('POST_UPLOAD', {
+            'BACKUP_TYPE': backup_type,
+            'BACKUP_DATE': backup_date,
+            'BACKUP_FILE': zip_path if config.get('DOWNLOAD_LOCALLY') == 'true' else '',
+            'BACKUP_URL': backup_url,
+            'BACKUP_FILENAME': file_name,
+        })
