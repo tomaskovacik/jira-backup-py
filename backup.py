@@ -3,6 +3,7 @@ import yaml
 import time
 import os
 import re
+import shutil
 import argparse
 import zipfile
 import requests
@@ -243,26 +244,38 @@ class Atlassian:
 
     def unzip_backup(self, local_filename, backup_type='jira'):
         """
-        Extract a downloaded backup zip into backups/<backup_type>/ and remove
-        the zip file if extraction completes without errors.
+        Clear the destination directory, extract a downloaded backup zip into
+        backups/<backup_type>/ and remove the zip file if extraction completes
+        without errors.
         """
         zip_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', local_filename)
-        extract_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', backup_type)
+        backups_dir = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups'))
+        extract_dir = os.path.realpath(os.path.join(backups_dir, backup_type))
 
         if not os.path.exists(zip_path):
             print('-> Zip file not found, skipping unzip: {}'.format(zip_path))
             return
 
+        # Safety check: ensure extract_dir is within backups_dir
+        if os.path.commonpath([extract_dir, backups_dir]) != backups_dir:
+            raise Exception('Extract directory is outside the backups directory: {}'.format(extract_dir))
+
+        if os.path.exists(extract_dir):
+            print('-> Clearing destination directory: {}'.format(extract_dir))
+            shutil.rmtree(extract_dir)
         os.makedirs(extract_dir, exist_ok=True)
         print('-> Extracting {} to {}'.format(local_filename, extract_dir))
 
-        extract_dir_real = os.path.realpath(extract_dir)
-        with zipfile.ZipFile(zip_path, 'r') as zf:
-            for member in zf.infolist():
-                member_path = os.path.realpath(os.path.join(extract_dir_real, member.filename))
-                if not member_path.startswith(extract_dir_real + os.sep) and member_path != extract_dir_real:
-                    raise Exception('Zip slip attempt detected in member: {}'.format(member.filename))
-                zf.extract(member, extract_dir_real)
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                for member in zf.infolist():
+                    member_path = os.path.realpath(os.path.join(extract_dir, member.filename))
+                    if os.path.commonpath([member_path, extract_dir]) != extract_dir:
+                        raise Exception('Zip slip attempt detected in member: {}'.format(member.filename))
+                    zf.extract(member, extract_dir)
+        except Exception as e:
+            print('-> Extraction failed: {}. Zip file retained: {}'.format(e, zip_path))
+            raise
 
         print('-> Extraction complete, removing zip: {}'.format(zip_path))
         os.remove(zip_path)
