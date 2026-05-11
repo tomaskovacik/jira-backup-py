@@ -4,6 +4,7 @@ import time
 import os
 import re
 import argparse
+import zipfile
 import requests
 import boto3
 from urllib.parse import urlparse, parse_qs
@@ -239,6 +240,32 @@ class Atlassian:
                     downloaded_bytes = os.path.getsize(file_path)
 
         raise Exception(f'Download failed after {max_retries} retries')
+
+    def unzip_backup(self, local_filename, backup_type='jira'):
+        """
+        Extract a downloaded backup zip into backups/<backup_type>/ and remove
+        the zip file if extraction completes without errors.
+        """
+        zip_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', local_filename)
+        extract_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', backup_type)
+
+        if not os.path.exists(zip_path):
+            print('-> Zip file not found, skipping unzip: {}'.format(zip_path))
+            return
+
+        os.makedirs(extract_dir, exist_ok=True)
+        print('-> Extracting {} to {}'.format(local_filename, extract_dir))
+
+        extract_dir_real = os.path.realpath(extract_dir)
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            for member in zf.infolist():
+                member_path = os.path.realpath(os.path.join(extract_dir_real, member.filename))
+                if not member_path.startswith(extract_dir_real + os.sep) and member_path != extract_dir_real:
+                    raise Exception('Zip slip attempt detected in member: {}'.format(member.filename))
+                zf.extract(member, extract_dir_real)
+
+        print('-> Extraction complete, removing zip: {}'.format(zip_path))
+        os.remove(zip_path)
 
     def stream_to_s3(self, url, remote_filename):
         print('-> Streaming to S3')
@@ -499,6 +526,8 @@ if __name__ == '__main__':
     else:
         if config['DOWNLOAD_LOCALLY'] == 'true':
             atlass.download_file(backup_url, file_name)
+            if config.get('UNZIP_BACKUP') in (True, 'true'):
+                atlass.unzip_backup(file_name, backup_type)
 
         if 'UPLOAD_TO_S3' in config and config['UPLOAD_TO_S3'].get('S3_BUCKET', '') != '':
             atlass.stream_to_s3(backup_url, file_name)
