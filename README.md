@@ -69,6 +69,7 @@ USER_EMAIL: "your.email@company.com"
 API_TOKEN: "your-api-token"
 INCLUDE_ATTACHMENTS: false
 DOWNLOAD_LOCALLY: true
+UNZIP_BACKUP: false  # set to true to extract into backups/jira or backups/confluence and remove the zip
 
 # AWS S3 Configuration (optional)
 UPLOAD_TO_S3:
@@ -203,6 +204,7 @@ USER_EMAIL: "your.email@company.com"
 API_TOKEN: "your-api-token"
 INCLUDE_ATTACHMENTS: false
 DOWNLOAD_LOCALLY: true
+UNZIP_BACKUP: false  # set to true to extract into backups/jira or backups/confluence and remove the zip
 ```
 
 Simply omit the `UPLOAD_TO_XXX` sections you don't need.
@@ -231,6 +233,7 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 
 ## 📝 Changelog
 
+- **2026-05-11**: Added `UNZIP_BACKUP` option to extract downloaded backups into `backups/jira` or `backups/confluence` and remove the zip on success
 - **2026-04-21**: Added Playwright web UI mode as a fallback backup driver
 - **2025-06-24**: Added separate cron schedules for Jira and Confluence backups
 - **2025-06-24**: Made cloud storage configuration sections optional
