@@ -1,0 +1,20 @@
+services:
+  jira-backup:
+    image: ghcr.io/tomaskovacik/jira-backup-py:latest
+    profiles:
+      - jira
+    volumes:
+      - ./config.yaml:/backup/config.yaml:ro
+      - ./backups:/backup/backups
+    command: ["-j"]
+    restart: "no"
+
+  confluence-backup:
+    image: ghcr.io/tomaskovacik/jira-backup-py:latest
+    profiles:
+      - confluence
+    volumes:
+      - ./config.yaml:/backup/config.yaml:ro
+      - ./backups:/backup/backups
+    command: ["-c"]
+    restart: "no"

@@ -144,6 +144,83 @@ python backup.py -w
 
 This will guide you through setting up basic Jira credentials, S3 configuration, and Playwright mode.
 
+## 🐳 Docker
+
+### Pre-built image
+
+Release images are published automatically to the GitHub Container Registry on every `v*` tag:
+
+```bash
+# Pull the latest release
+docker pull ghcr.io/tomaskovacik/jira-backup-py:latest
+
+# Pull a specific version
+docker pull ghcr.io/tomaskovacik/jira-backup-py:v1.0.0
+```
+
+### Build the image locally
+
+```bash
+docker build -t jira-backup-py .
+```
+
+### Run a backup
+
+Mount your `config.yaml` and (optionally) a local directory to persist downloaded backups:
+
+```bash
+# Backup Jira
+docker run --rm \
+  -v /path/to/config.yaml:/backup/config.yaml:ro \
+  -v /path/to/local/backups:/backup/backups \
+  jira-backup-py -j
+
+# Backup Confluence
+docker run --rm \
+  -v /path/to/config.yaml:/backup/config.yaml:ro \
+  -v /path/to/local/backups:/backup/backups \
+  jira-backup-py -c
+```
+
+> **Note**: Omit the `-v /path/to/local/backups` mount if you upload backups directly to S3/GCP/Azure and do not need a local copy.
+
+### Playwright mode inside Docker
+
+Chromium and its OS dependencies are pre-installed in the image. Enable Playwright mode via `config.yaml` (`USE_PLAYWRIGHT: true`) or the CLI flag:
+
+```bash
+docker run --rm \
+  -v /path/to/config.yaml:/backup/config.yaml:ro \
+  jira-backup-py -j --playwright
+```
+
+### Docker Compose
+
+A `docker-compose.yml` is included for quick, one-command backups.
+
+**Prerequisites** — before running, copy the example config and fill in your credentials:
+
+```bash
+cp config.yaml.example config.yaml
+# Edit config.yaml with your HOST_URL, USER_EMAIL, API_TOKEN, etc.
+```
+
+Then run the desired backup:
+
+```bash
+# Backup Jira
+docker compose --profile jira up
+
+# Backup Confluence
+docker compose --profile confluence up
+```
+
+Both services mount `./config.yaml` (read-only) and persist downloaded backups to `./backups/`. To pin a specific release instead of `latest`, edit the `image:` field in `docker-compose.yml`:
+
+```yaml
+image: ghcr.io/tomaskovacik/jira-backup-py:v1.0.0
+```
+
 ## 🚀 Usage
 
 ### Manual Backup
