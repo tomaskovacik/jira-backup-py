@@ -227,6 +227,61 @@ UPLOAD_TO_AZURE:
   # ... Azure config
 ```
 
+## 🔒 Restic Integration (Deduplication & Encrypted Offsite Backup)
+
+### Why run restic outside the container (recommended)
+
+- **Single Responsibility**: `backup.py` handles fetching backups from Atlassian; restic handles deduplication and offsite storage. Keeping them separate is easier to maintain.
+- **Filesystem-based deduplication**: restic works best on files on disk. It fits naturally *after* the download step rather than being embedded inside the Python process via `subprocess`.
+- **Independent upgrades**: restic repo formats and retention policies can evolve independently of `backup.py`.
+- **Smaller image**: restic is ~25 MB; no need to bloat the Python (or Playwright) image.
+
+### Docker Compose sidecar pattern
+
+```yaml
+services:
+  jira-backup:
+    build: .
+    volumes:
+      - backup-data:/app/backups
+    environment:
+      - HOST_URL=your-instance.atlassian.net
+      # ... other env vars / mount config.yaml
+
+  restic:
+    image: restic/restic
+    volumes:
+      - backup-data:/data:ro
+      - restic-repo:/repo
+    environment:
+      - RESTIC_REPOSITORY=/repo          # or s3:s3.amazonaws.com/bucket / sftp / b2 etc.
+      - RESTIC_PASSWORD_FILE=/run/secrets/restic-password
+    command: >
+      sh -c "restic backup /data && restic forget --keep-last 30 --prune"
+    depends_on:
+      jira-backup:
+        condition: service_completed_successfully
+
+volumes:
+  backup-data:
+  restic-repo:
+```
+
+`depends_on: condition: service_completed_successfully` ensures restic only runs after `backup.py` finishes successfully.
+
+### Tip: better deduplication with UNZIP_BACKUP
+
+Enabling `UNZIP_BACKUP: true` in `config.yaml` causes the backup to be extracted into individual files before restic runs. This dramatically improves deduplication ratios because restic can chunk individual files rather than a monolithic zip, meaning only changed content creates new chunks.
+
+```yaml
+DOWNLOAD_LOCALLY: true
+UNZIP_BACKUP: true   # restic deduplicates individual files much better than a zip
+```
+
+### When to embed restic inside the container
+
+Embedding restic directly (as a binary in the Docker image, called via subprocess) only makes sense if you need a single-container zero-external-dependency deployment, but comes at the cost of a larger image, tighter coupling, and subprocess orchestration complexity. The external sidecar approach is preferred for most use cases.
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
