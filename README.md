@@ -146,7 +146,19 @@ This will guide you through setting up basic Jira credentials, S3 configuration,
 
 ## 🐳 Docker
 
-### Build the image
+### Pre-built image
+
+Release images are published automatically to the GitHub Container Registry on every `v*` tag:
+
+```bash
+# Pull the latest release
+docker pull ghcr.io/tomaskovacik/jira-backup-py:latest
+
+# Pull a specific version
+docker pull ghcr.io/tomaskovacik/jira-backup-py:v1.0.0
+```
+
+### Build the image locally
 
 ```bash
 docker build -t jira-backup-py .
