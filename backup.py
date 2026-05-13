@@ -392,6 +392,10 @@ def run_post_backup_command(config):
         print('-> Warning: POST_BACKUP_COMMAND exited with code {}'.format(result.returncode))
 
 
+def is_enabled(value):
+    return value in (True, 'true')
+
+
 def handle_completed_backup(atlass, config, backup_url, backup_type):
     file_name = atlass.generate_filename(backup_url, backup_type)
     print('-> Generated filename: {}'.format(file_name))
@@ -403,10 +407,10 @@ def handle_completed_backup(atlass, config, backup_url, backup_type):
 
     backup_handled = False
 
-    if config.get('DOWNLOAD_LOCALLY') in (True, 'true'):
+    if is_enabled(config.get('DOWNLOAD_LOCALLY')):
         atlass.download_file(backup_url, file_name)
         backup_handled = True
-        if config.get('UNZIP_BACKUP') in (True, 'true'):
+        if is_enabled(config.get('UNZIP_BACKUP')):
             atlass.unzip_backup(file_name, backup_type)
 
     if 'UPLOAD_TO_S3' in config and config['UPLOAD_TO_S3'].get('S3_BUCKET', '') != '':
