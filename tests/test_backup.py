@@ -105,6 +105,18 @@ class RunPostBackupCommandTests(unittest.TestCase):
         self.assertIn('-> Warning: POST_BACKUP_COMMAND exited with code 23', output)
         self.assertIn('restic failed', output)
 
+    def test_runs_command_unchanged_when_placeholder_substitution_fails(self):
+        stdout = io.StringIO()
+        completed_process = Mock(returncode=0, stdout='', stderr='')
+
+        with patch('backup.subprocess.run', return_value=completed_process) as subprocess_run:
+            with redirect_stdout(stdout):
+                backup.run_post_backup_command({'POST_BACKUP_COMMAND': 'echo {1..3}'})
+
+        self.assertEqual(subprocess_run.call_args.args[0], 'echo {1..3}')
+        output = stdout.getvalue()
+        self.assertIn('placeholder substitution failed', output)
+
 
 def _make_atlas(tmp_dir):
     """Create a minimal Atlassian instance whose backups dir is tmp_dir."""

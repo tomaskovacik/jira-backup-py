@@ -431,12 +431,17 @@ def run_post_backup_command(config, backup_path='', backup_type=''):
     backup_dir = os.path.dirname(backup_path) if backup_path else ''
     backup_filename = os.path.basename(backup_path) if backup_path else ''
 
-    command = command.format(
-        backup_path=backup_path,
-        backup_filename=backup_filename,
-        backup_type=backup_type,
-        backup_dir=backup_dir
-    )
+    raw_command = command
+    try:
+        command = command.format(
+            backup_path=backup_path,
+            backup_filename=backup_filename,
+            backup_type=backup_type,
+            backup_dir=backup_dir
+        )
+    except (KeyError, IndexError, ValueError) as e:
+        print('-> Warning: POST_BACKUP_COMMAND placeholder substitution failed ({}); running command unchanged.'.format(e))
+        command = raw_command
 
     env = os.environ.copy()
     env['BACKUP_PATH'] = backup_path
