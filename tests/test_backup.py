@@ -105,7 +105,7 @@ class RunPostBackupCommandTests(unittest.TestCase):
         self.assertIn('-> Warning: POST_BACKUP_COMMAND exited with code 23', output)
         self.assertIn('restic failed', output)
 
-    def test_runs_command_unchanged_when_placeholder_substitution_fails(self):
+    def test_runs_command_unchanged_when_command_contains_literal_braces(self):
         stdout = io.StringIO()
         completed_process = Mock(returncode=0, stdout='', stderr='')
 
