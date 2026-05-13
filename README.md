@@ -304,6 +304,26 @@ UPLOAD_TO_AZURE:
   # ... Azure config
 ```
 
+### Restic Integration
+
+If you want automatic deduplicated and encrypted offsite backups with restic, use `POST_BACKUP_COMMAND`.
+
+Docker Compose `depends_on: <service>: condition: service_completed_successfully` only helps with one-off `docker compose up` runs. It does **not** automatically re-trigger restic after recurring executions scheduled by cron on the host, cron inside a container, or any other scheduler.
+
+`POST_BACKUP_COMMAND` runs automatically after every successful backup that is downloaded locally and/or uploaded, whether you start it manually, from cron, or inside Docker.
+
+```yaml
+DOWNLOAD_LOCALLY: true
+UNZIP_BACKUP: true   # better deduplication - restic chunks individual files, not a zip
+POST_BACKUP_COMMAND: "restic backup /app/backups && restic forget --keep-last 30 --prune"
+```
+
+Running restic in the same Docker container is supported, but you need the restic binary available there—either install it in the `Dockerfile` or mount it into the container as a volume.
+
+> **Warning:** Only set `POST_BACKUP_COMMAND` to a command you trust and control, because it is executed by the shell.
+
+> **Tip**: `UNZIP_BACKUP: true` dramatically improves deduplication ratios because restic can chunk the individual extracted files instead of re-processing one large zip archive.
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
