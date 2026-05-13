@@ -397,6 +397,7 @@ def is_enabled(value):
 
 
 def handle_completed_backup(atlass, config, backup_url, backup_type):
+    """Store the completed backup artifact and run the post-backup hook for this run."""
     file_name = atlass.generate_filename(backup_url, backup_type)
     print('-> Generated filename: {}'.format(file_name))
 
