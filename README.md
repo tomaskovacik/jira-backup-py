@@ -320,6 +320,8 @@ POST_BACKUP_COMMAND: "restic backup /app/backups && restic forget --keep-last 30
 
 Running restic in the same Docker container is supported, but you need the restic binary available there—either install it in the `Dockerfile` or mount it into the container as a volume.
 
+Only set `POST_BACKUP_COMMAND` to a command you trust and control, because it is executed by the shell.
+
 > **Tip**: `UNZIP_BACKUP: true` dramatically improves deduplication ratios because restic can chunk the individual extracted files instead of re-processing one large zip archive.
 
 ## 🤝 Contributing
