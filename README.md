@@ -308,7 +308,7 @@ UPLOAD_TO_AZURE:
 
 If you want automatic deduplicated and encrypted offsite backups with restic, use `POST_BACKUP_COMMAND`.
 
-`depends_on: condition: service_completed_successfully` in Docker Compose only helps with one-off `docker compose up` runs. It does **not** automatically re-trigger restic after scheduled cron runs or other recurring executions.
+Docker Compose `depends_on: <service>: condition: service_completed_successfully` only helps with one-off `docker compose up` runs. It does **not** automatically re-trigger restic after scheduled cron runs or other recurring executions.
 
 `POST_BACKUP_COMMAND` runs automatically after every successful backup that is downloaded locally and/or uploaded, whether you start it manually, from cron, or inside Docker.
 
