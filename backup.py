@@ -157,10 +157,44 @@ class Atlassian:
         return '{prefix}/{result_id}'.format(
             prefix='https://' + self.config['HOST_URL'] + '/plugins/servlet', result_id=self.backup_status['result'])
 
+    def _registry_path(self):
+        """Return the path to the local backup registry JSON file."""
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', '.backup_registry.json')
+
+    def _load_registry(self):
+        """Load the local backup registry, returning an empty dict on error."""
+        path = self._registry_path()
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError):
+                return {}
+        return {}
+
+    def _save_registry(self, data):
+        """Persist the backup registry to disk."""
+        path = self._registry_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2)
+
+    def _record_uuid_in_registry(self, uuid, filename='', backup_type=''):
+        """Record a backup UUID in the local registry after it has been processed."""
+        registry = self._load_registry()
+        registry[uuid] = {
+            'filename': filename,
+            'backup_type': backup_type,
+            'downloaded_at': time.strftime('%Y-%m-%dT%H:%M:%S'),
+        }
+        self._save_registry(registry)
+        print('-> Recorded UUID {} in local backup registry'.format(uuid))
+
     def is_already_downloaded(self, backup_url):
         """
         Check if a backup with the same UUID as in backup_url already exists
-        in the local backups directory.
+        in the local backups directory or in the local backup registry
+        (for backups that were unzipped and whose zip was subsequently removed).
         Returns the existing filename if found, None otherwise.
         """
         parsed = urlparse(backup_url)
@@ -185,6 +219,14 @@ class Atlassian:
             for filename in os.listdir(backups_dir):
                 if match_pattern.search(filename):
                     return filename
+
+        # Also check the local registry for backups that were unzipped (zip deleted).
+        # UUIDs are stored in lowercase; normalise the lookup accordingly.
+        registry = self._load_registry()
+        entry = registry.get(backup_id.lower())
+        if entry is not None:
+            return entry.get('filename') or backup_id
+
         return None
 
     def download_file(self, url, local_filename, max_retries=5):
@@ -276,6 +318,16 @@ class Atlassian:
         except Exception as e:
             print('-> Extraction failed: {}. Zip file retained: {}'.format(e, zip_path))
             raise
+
+        # Record the UUID in the local registry before the zip is removed so
+        # is_already_downloaded() can still detect this backup on future runs.
+        uuid_re = re.compile(
+            r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+            re.IGNORECASE
+        )
+        m = uuid_re.search(local_filename)
+        if m:
+            self._record_uuid_in_registry(m.group(0).lower(), filename=local_filename, backup_type=backup_type)
 
         print('-> Extraction complete, removing zip: {}'.format(zip_path))
         os.remove(zip_path)
