@@ -8,9 +8,9 @@ import backup
 
 class HandleCompletedBackupTests(unittest.TestCase):
     def test_runs_post_backup_command_after_successful_backup(self):
-        atlass = Mock()
-        atlass.generate_filename.return_value = 'confluence_backup.zip'
-        atlass.is_already_downloaded.return_value = None
+        atlas = Mock()
+        atlas.generate_filename.return_value = 'confluence_backup.zip'
+        atlas.is_already_downloaded.return_value = None
         config = {
             'DOWNLOAD_LOCALLY': True,
             'UNZIP_BACKUP': True,
@@ -18,25 +18,25 @@ class HandleCompletedBackupTests(unittest.TestCase):
         }
 
         with patch('backup.run_post_backup_command') as run_post_backup_command:
-            backup.handle_completed_backup(atlass, config, 'https://example.invalid/fileId=abc', 'confluence')
+            backup.handle_completed_backup(atlas, config, 'https://example.invalid/fileId=abc', 'confluence')
 
-        atlass.download_file.assert_called_once_with('https://example.invalid/fileId=abc', 'confluence_backup.zip')
-        atlass.unzip_backup.assert_called_once_with('confluence_backup.zip', 'confluence')
+        atlas.download_file.assert_called_once_with('https://example.invalid/fileId=abc', 'confluence_backup.zip')
+        atlas.unzip_backup.assert_called_once_with('confluence_backup.zip', 'confluence')
         run_post_backup_command.assert_called_once_with(config)
 
     def test_skips_post_backup_command_when_backup_already_exists(self):
-        atlass = Mock()
-        atlass.generate_filename.return_value = 'jira_backup.zip'
-        atlass.is_already_downloaded.return_value = 'jira_backup.zip'
+        atlas = Mock()
+        atlas.generate_filename.return_value = 'jira_backup.zip'
+        atlas.is_already_downloaded.return_value = 'jira_backup.zip'
         config = {
             'DOWNLOAD_LOCALLY': True,
             'POST_BACKUP_COMMAND': 'restic backup /app/backups',
         }
 
         with patch('backup.run_post_backup_command') as run_post_backup_command:
-            backup.handle_completed_backup(atlass, config, 'https://example.invalid/fileId=abc', 'jira')
+            backup.handle_completed_backup(atlas, config, 'https://example.invalid/fileId=abc', 'jira')
 
-        atlass.download_file.assert_not_called()
+        atlas.download_file.assert_not_called()
         run_post_backup_command.assert_not_called()
 
 

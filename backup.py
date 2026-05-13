@@ -371,6 +371,7 @@ class Atlassian:
 
 
 def run_post_backup_command(config):
+    """Run the optional post-backup shell command without failing the backup."""
     command = config.get('POST_BACKUP_COMMAND')
     if not command:
         return
@@ -379,7 +380,7 @@ def run_post_backup_command(config):
     try:
         result = subprocess.run(command, shell=True, capture_output=True, text=True)
     except Exception as e:
-        print('-> Warning: POST_BACKUP_COMMAND failed to start: {}'.format(e))
+        print('-> Warning: POST_BACKUP_COMMAND "{}" failed to start: {}'.format(command, e))
         return
 
     if result.stdout:
