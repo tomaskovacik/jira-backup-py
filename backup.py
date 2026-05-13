@@ -370,6 +370,61 @@ class Atlassian:
             )
 
 
+def run_post_backup_command(config):
+    command = config.get('POST_BACKUP_COMMAND')
+    if not command:
+        return
+
+    print('-> Running POST_BACKUP_COMMAND: {}'.format(command))
+    try:
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    except Exception as e:
+        print('-> Warning: POST_BACKUP_COMMAND failed to start: {}'.format(e))
+        return
+
+    if result.stdout:
+        print('-> POST_BACKUP_COMMAND stdout:')
+        print(result.stdout.rstrip())
+    if result.stderr:
+        print('-> POST_BACKUP_COMMAND stderr:')
+        print(result.stderr.rstrip())
+    if result.returncode != 0:
+        print('-> Warning: POST_BACKUP_COMMAND exited with code {}'.format(result.returncode))
+
+
+def handle_completed_backup(atlass, config, backup_url, backup_type):
+    file_name = atlass.generate_filename(backup_url, backup_type)
+    print('-> Generated filename: {}'.format(file_name))
+
+    existing_file = atlass.is_already_downloaded(backup_url)
+    if existing_file:
+        print('-> Backup with the same UUID already exists locally as "{}". Skipping download and upload.'.format(existing_file))
+        return
+
+    backup_handled = False
+
+    if config.get('DOWNLOAD_LOCALLY') in (True, 'true'):
+        atlass.download_file(backup_url, file_name)
+        backup_handled = True
+        if config.get('UNZIP_BACKUP') in (True, 'true'):
+            atlass.unzip_backup(file_name, backup_type)
+
+    if 'UPLOAD_TO_S3' in config and config['UPLOAD_TO_S3'].get('S3_BUCKET', '') != '':
+        atlass.stream_to_s3(backup_url, file_name)
+        backup_handled = True
+
+    if 'UPLOAD_TO_GCP' in config and config['UPLOAD_TO_GCP'].get('GCS_BUCKET', '') != '':
+        atlass.stream_to_gcs(backup_url, file_name)
+        backup_handled = True
+
+    if 'UPLOAD_TO_AZURE' in config and config['UPLOAD_TO_AZURE'].get('AZURE_CONTAINER', '') != '':
+        atlass.stream_to_azure(backup_url, file_name)
+        backup_handled = True
+
+    if backup_handled:
+        run_post_backup_command(config)
+
+
 def setup_scheduled_task(frequency_days=4, time_hour=10, time_minute=0, service_type='jira'):
     script_path = os.path.abspath(__file__)
     script_dir = os.path.dirname(script_path)
@@ -530,23 +585,4 @@ if __name__ == '__main__':
         exit(1)
 
     print('-> Backup URL: {}'.format(backup_url))
-    file_name = atlass.generate_filename(backup_url, backup_type)
-    print('-> Generated filename: {}'.format(file_name))
-
-    existing_file = atlass.is_already_downloaded(backup_url)
-    if existing_file:
-        print('-> Backup with the same UUID already exists locally as "{}". Skipping download and upload.'.format(existing_file))
-    else:
-        if config['DOWNLOAD_LOCALLY'] == 'true':
-            atlass.download_file(backup_url, file_name)
-            if config.get('UNZIP_BACKUP') in (True, 'true'):
-                atlass.unzip_backup(file_name, backup_type)
-
-        if 'UPLOAD_TO_S3' in config and config['UPLOAD_TO_S3'].get('S3_BUCKET', '') != '':
-            atlass.stream_to_s3(backup_url, file_name)
-        
-        if 'UPLOAD_TO_GCP' in config and config['UPLOAD_TO_GCP'].get('GCS_BUCKET', '') != '':
-            atlass.stream_to_gcs(backup_url, file_name)
-        
-        if 'UPLOAD_TO_AZURE' in config and config['UPLOAD_TO_AZURE'].get('AZURE_CONTAINER', '') != '':
-            atlass.stream_to_azure(backup_url, file_name)
+    handle_completed_backup(atlass, config, backup_url, backup_type)
