@@ -393,7 +393,7 @@ def run_post_backup_command(config):
 
 
 def is_enabled(value):
-    return value in (True, 'true')
+    return value is True or (isinstance(value, str) and value.lower() == 'true')
 
 
 def handle_completed_backup(atlass, config, backup_url, backup_type):

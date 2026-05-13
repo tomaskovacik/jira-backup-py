@@ -7,7 +7,7 @@ import backup
 
 
 class HandleCompletedBackupTests(unittest.TestCase):
-    def test_runs_post_backup_command_after_successful_confluence_download(self):
+    def test_runs_post_backup_command_after_successful_backup(self):
         atlass = Mock()
         atlass.generate_filename.return_value = 'confluence_backup.zip'
         atlass.is_already_downloaded.return_value = None
