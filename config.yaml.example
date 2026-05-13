@@ -5,9 +5,23 @@ API_TOKEN: "token ID generated at https://id.atlassian.com/manage/api-tokens"
 INCLUDE_ATTACHMENTS: "include attachments? this will make the backup size bigger - true / false"
 DOWNLOAD_LOCALLY: "download the backup file to backups folder? true / false"
 UNZIP_BACKUP: "unzip the downloaded backup into backups/jira or backups/confluence directory and remove the zip on success? true / false"
-# Optional: shell command to run after a successful backup
-# Useful for restic deduplication / offsite encrypted backup
-# POST_BACKUP_COMMAND: "restic backup /app/backups && restic forget --keep-last 30 --prune"
+# Optional: shell command to run after a successful backup.
+# The backup location is available as placeholders in the command string
+# and as environment variables injected into the subprocess.
+#
+# Placeholders (substituted in the command string):
+#   {backup_path}     - full path to the zip file (UNZIP_BACKUP: false) or extracted folder (UNZIP_BACKUP: true)
+#   {backup_filename} - filename or folder name only (no directory)
+#   {backup_type}     - "jira" or "confluence"
+#   {backup_dir}      - the backups/ directory
+#
+# Environment variables (always set for external scripts):
+#   BACKUP_PATH, BACKUP_FILENAME, BACKUP_TYPE, BACKUP_DIR
+#
+# Examples:
+# POST_BACKUP_COMMAND: "restic backup {backup_path} && restic forget --keep-last 30 --prune"
+# POST_BACKUP_COMMAND: "rclone copy {backup_path} remote:mybucket/{backup_type}/"
+# POST_BACKUP_COMMAND: "/usr/local/bin/my-upload-script.sh"
 CHECK_EXISTING_BACKUP: false
 USE_PLAYWRIGHT: false
 PLAYWRIGHT_HEADLESS: true

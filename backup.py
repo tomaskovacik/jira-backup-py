@@ -422,15 +422,36 @@ class Atlassian:
             )
 
 
-def run_post_backup_command(config):
+def run_post_backup_command(config, backup_path='', backup_type=''):
     """Run the optional trusted post-backup shell command without failing the backup."""
     command = config.get('POST_BACKUP_COMMAND')
     if not command:
         return
 
+    backup_dir = os.path.dirname(backup_path) if backup_path else ''
+    backup_filename = os.path.basename(backup_path) if backup_path else ''
+
+    raw_command = command
+    try:
+        command = command.format(
+            backup_path=backup_path,
+            backup_filename=backup_filename,
+            backup_type=backup_type,
+            backup_dir=backup_dir
+        )
+    except (KeyError, IndexError, ValueError) as e:
+        print('-> Warning: POST_BACKUP_COMMAND placeholder substitution failed ({}); running command unchanged.'.format(e))
+        command = raw_command
+
+    env = os.environ.copy()
+    env['BACKUP_PATH'] = backup_path
+    env['BACKUP_FILENAME'] = backup_filename
+    env['BACKUP_TYPE'] = backup_type
+    env['BACKUP_DIR'] = backup_dir
+
     print('-> Running POST_BACKUP_COMMAND: {}'.format(command))
     try:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, env=env)
     except Exception as e:
         print('-> Warning: POST_BACKUP_COMMAND "{}" failed to start: {}'.format(command, e))
         return
@@ -480,7 +501,14 @@ def handle_completed_backup(atlas, config, backup_url, backup_type):
         backup_handled = True
 
     if backup_handled:
-        run_post_backup_command(config)
+        if is_enabled(config.get('UNZIP_BACKUP')):
+            resolved_backup_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'backups', backup_type)
+        else:
+            resolved_backup_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'backups', file_name)
+
+        run_post_backup_command(config, backup_path=resolved_backup_path, backup_type=backup_type)
 
 
 def setup_scheduled_task(frequency_days=4, time_hour=10, time_minute=0, service_type='jira'):

@@ -23,9 +23,28 @@ class HandleCompletedBackupTests(unittest.TestCase):
         with patch('backup.run_post_backup_command') as run_post_backup_command:
             backup.handle_completed_backup(atlas, config, 'https://example.invalid/fileId=abc', 'confluence')
 
+        expected_backup_path = os.path.join(os.path.dirname(os.path.abspath(backup.__file__)), 'backups', 'confluence')
         atlas.download_file.assert_called_once_with('https://example.invalid/fileId=abc', 'confluence_backup.zip')
         atlas.unzip_backup.assert_called_once_with('confluence_backup.zip', 'confluence')
-        run_post_backup_command.assert_called_once_with(config)
+        run_post_backup_command.assert_called_once_with(config, backup_path=expected_backup_path, backup_type='confluence')
+
+    def test_runs_post_backup_command_with_zip_path_when_unzip_disabled(self):
+        atlas = Mock()
+        atlas.generate_filename.return_value = 'jira_backup.zip'
+        atlas.is_already_downloaded.return_value = None
+        config = {
+            'DOWNLOAD_LOCALLY': True,
+            'UNZIP_BACKUP': False,
+            'POST_BACKUP_COMMAND': 'echo done',
+        }
+
+        with patch('backup.run_post_backup_command') as run_post_backup_command:
+            backup.handle_completed_backup(atlas, config, 'https://example.invalid/fileId=abc', 'jira')
+
+        expected_backup_path = os.path.join(os.path.dirname(os.path.abspath(backup.__file__)), 'backups', 'jira_backup.zip')
+        atlas.download_file.assert_called_once_with('https://example.invalid/fileId=abc', 'jira_backup.zip')
+        atlas.unzip_backup.assert_not_called()
+        run_post_backup_command.assert_called_once_with(config, backup_path=expected_backup_path, backup_type='jira')
 
     def test_skips_post_backup_command_when_backup_already_exists(self):
         atlas = Mock()
@@ -47,14 +66,27 @@ class RunPostBackupCommandTests(unittest.TestCase):
     def test_logs_stdout_and_stderr_for_successful_command(self):
         stdout = io.StringIO()
         completed_process = Mock(returncode=0, stdout='done\n', stderr='warning\n')
+        backup_path = '/app/backups/jira_backup.zip'
+        backup_dir = '/app/backups'
 
         with patch('backup.subprocess.run', return_value=completed_process) as subprocess_run:
             with redirect_stdout(stdout):
-                backup.run_post_backup_command({'POST_BACKUP_COMMAND': 'echo done'})
+                backup.run_post_backup_command(
+                    {'POST_BACKUP_COMMAND': 'echo {backup_filename} {backup_type} {backup_dir} {backup_path}'},
+                    backup_path=backup_path,
+                    backup_type='jira'
+                )
 
-        subprocess_run.assert_called_once_with('echo done', shell=True, capture_output=True, text=True)
+        subprocess_run.assert_called_once()
+        called_command = subprocess_run.call_args.args[0]
+        called_env = subprocess_run.call_args.kwargs['env']
+        self.assertEqual(called_command, 'echo jira_backup.zip jira /app/backups /app/backups/jira_backup.zip')
+        self.assertEqual(called_env['BACKUP_PATH'], backup_path)
+        self.assertEqual(called_env['BACKUP_FILENAME'], 'jira_backup.zip')
+        self.assertEqual(called_env['BACKUP_TYPE'], 'jira')
+        self.assertEqual(called_env['BACKUP_DIR'], backup_dir)
         output = stdout.getvalue()
-        self.assertIn('-> Running POST_BACKUP_COMMAND: echo done', output)
+        self.assertIn('-> Running POST_BACKUP_COMMAND: echo jira_backup.zip jira /app/backups /app/backups/jira_backup.zip', output)
         self.assertIn('-> POST_BACKUP_COMMAND stdout:', output)
         self.assertIn('done', output)
         self.assertIn('-> POST_BACKUP_COMMAND stderr:', output)
@@ -72,6 +104,18 @@ class RunPostBackupCommandTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn('-> Warning: POST_BACKUP_COMMAND exited with code 23', output)
         self.assertIn('restic failed', output)
+
+    def test_runs_command_unchanged_when_command_contains_literal_braces(self):
+        stdout = io.StringIO()
+        completed_process = Mock(returncode=0, stdout='', stderr='')
+
+        with patch('backup.subprocess.run', return_value=completed_process) as subprocess_run:
+            with redirect_stdout(stdout):
+                backup.run_post_backup_command({'POST_BACKUP_COMMAND': 'echo {1..3}'})
+
+        self.assertEqual(subprocess_run.call_args.args[0], 'echo {1..3}')
+        output = stdout.getvalue()
+        self.assertIn('placeholder substitution failed', output)
 
 
 def _make_atlas(tmp_dir):
