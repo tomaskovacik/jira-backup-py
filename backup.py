@@ -220,18 +220,12 @@ class Atlassian:
                 if match_pattern.search(filename):
                     return filename
 
-        # Also check the local registry for backups that were unzipped (zip deleted)
+        # Also check the local registry for backups that were unzipped (zip deleted).
+        # UUIDs are stored in lowercase; normalise the lookup accordingly.
         registry = self._load_registry()
-        if backup_id.lower() in registry:
-            entry = registry[backup_id.lower()]
+        entry = registry.get(backup_id.lower())
+        if entry is not None:
             return entry.get('filename') or backup_id
-        if backup_id.upper() in registry:
-            entry = registry[backup_id.upper()]
-            return entry.get('filename') or backup_id
-        # Case-insensitive lookup across stored keys
-        for key, entry in registry.items():
-            if key.lower() == backup_id.lower():
-                return entry.get('filename') or backup_id
 
         return None
 

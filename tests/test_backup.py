@@ -103,11 +103,6 @@ class BackupRegistryTests(unittest.TestCase):
         }
         self.atlas = backup.Atlassian(config)
 
-    def _patch_registry_path(self):
-        """Return the registry path inside a temp backups dir."""
-        registry_path = os.path.join(self.tmp, '.backup_registry.json')
-        return registry_path
-
     def _set_registry_path(self):
         """Patch _registry_path so it uses the temp directory."""
         registry_path = os.path.join(self.tmp, '.backup_registry.json')
