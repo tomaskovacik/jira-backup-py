@@ -371,7 +371,7 @@ class Atlassian:
 
 
 def run_post_backup_command(config):
-    """Run the optional post-backup shell command without failing the backup."""
+    """Run the optional trusted post-backup shell command without failing the backup."""
     command = config.get('POST_BACKUP_COMMAND')
     if not command:
         return
@@ -397,12 +397,12 @@ def is_enabled(value):
     return value is True or (isinstance(value, str) and value.lower() == 'true')
 
 
-def handle_completed_backup(atlass, config, backup_url, backup_type):
+def handle_completed_backup(atlas, config, backup_url, backup_type):
     """Store the completed backup artifact and run the post-backup hook for this run."""
-    file_name = atlass.generate_filename(backup_url, backup_type)
+    file_name = atlas.generate_filename(backup_url, backup_type)
     print('-> Generated filename: {}'.format(file_name))
 
-    existing_file = atlass.is_already_downloaded(backup_url)
+    existing_file = atlas.is_already_downloaded(backup_url)
     if existing_file:
         print('-> Backup with the same UUID already exists locally as "{}". Skipping download and upload.'.format(existing_file))
         return
@@ -410,21 +410,21 @@ def handle_completed_backup(atlass, config, backup_url, backup_type):
     backup_handled = False
 
     if is_enabled(config.get('DOWNLOAD_LOCALLY')):
-        atlass.download_file(backup_url, file_name)
+        atlas.download_file(backup_url, file_name)
         backup_handled = True
         if is_enabled(config.get('UNZIP_BACKUP')):
-            atlass.unzip_backup(file_name, backup_type)
+            atlas.unzip_backup(file_name, backup_type)
 
     if 'UPLOAD_TO_S3' in config and config['UPLOAD_TO_S3'].get('S3_BUCKET', '') != '':
-        atlass.stream_to_s3(backup_url, file_name)
+        atlas.stream_to_s3(backup_url, file_name)
         backup_handled = True
 
     if 'UPLOAD_TO_GCP' in config and config['UPLOAD_TO_GCP'].get('GCS_BUCKET', '') != '':
-        atlass.stream_to_gcs(backup_url, file_name)
+        atlas.stream_to_gcs(backup_url, file_name)
         backup_handled = True
 
     if 'UPLOAD_TO_AZURE' in config and config['UPLOAD_TO_AZURE'].get('AZURE_CONTAINER', '') != '':
-        atlass.stream_to_azure(backup_url, file_name)
+        atlas.stream_to_azure(backup_url, file_name)
         backup_handled = True
 
     if backup_handled:
