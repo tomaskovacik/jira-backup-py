@@ -196,7 +196,16 @@ docker run --rm \
 
 ### Docker Compose
 
-A `docker-compose.yml` is included for quick, one-command backups. Copy `config.yaml.example` to `config.yaml`, fill in your credentials, then:
+A `docker-compose.yml` is included for quick, one-command backups.
+
+**Prerequisites** — before running, copy the example config and fill in your credentials:
+
+```bash
+cp config.yaml.example config.yaml
+# Edit config.yaml with your HOST_URL, USER_EMAIL, API_TOKEN, etc.
+```
+
+Then run the desired backup:
 
 ```bash
 # Backup Jira
@@ -206,7 +215,11 @@ docker compose --profile jira up
 docker compose --profile confluence up
 ```
 
-Both services mount `./config.yaml` (read-only) and persist downloaded backups to `./backups/`. Swap the `image:` tag to a specific version if you need to pin a release.
+Both services mount `./config.yaml` (read-only) and persist downloaded backups to `./backups/`. To pin a specific release instead of `latest`, edit the `image:` field in `docker-compose.yml`:
+
+```yaml
+image: ghcr.io/tomaskovacik/jira-backup-py:v1.0.0
+```
 
 ## 🚀 Usage
 
