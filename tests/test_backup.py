@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+import yaml
 from contextlib import redirect_stdout
 from unittest.mock import Mock, patch
 
@@ -116,6 +117,34 @@ class RunPostBackupCommandTests(unittest.TestCase):
         self.assertEqual(subprocess_run.call_args.args[0], 'echo {1..3}')
         output = stdout.getvalue()
         self.assertIn('placeholder substitution failed', output)
+
+
+class ReadConfigTests(unittest.TestCase):
+    def test_missing_config_exits_gracefully(self):
+        with self.assertRaises(SystemExit) as cm:
+            with redirect_stdout(io.StringIO()) as stdout:
+                backup.read_config('/tmp/nonexistent_config_12345.yaml')
+        self.assertEqual(cm.exception.code, 1)
+
+    def test_missing_config_prints_helpful_message(self):
+        out = io.StringIO()
+        with self.assertRaises(SystemExit):
+            with redirect_stdout(out):
+                backup.read_config('/tmp/nonexistent_config_12345.yaml')
+        output = out.getvalue()
+        self.assertIn('/tmp/nonexistent_config_12345.yaml', output)
+        self.assertIn('config.yaml.example', output)
+
+    def test_reads_valid_config(self):
+        cfg = {'HOST_URL': 'test.atlassian.net', 'USER_EMAIL': 'a@b.com', 'API_TOKEN': 'tok', 'INCLUDE_ATTACHMENTS': 'false'}
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            yaml.dump(cfg, f)
+            tmp_path = f.name
+        try:
+            result = backup.read_config(tmp_path)
+            self.assertEqual(result['HOST_URL'], 'test.atlassian.net')
+        finally:
+            os.unlink(tmp_path)
 
 
 def _make_atlas(tmp_dir):
