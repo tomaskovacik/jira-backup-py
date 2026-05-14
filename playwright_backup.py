@@ -338,6 +338,8 @@ class PlaywrightAtlassian(Atlassian):
                     print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
                     print("-> Using existing backup instead of creating a new one.")
                     return full_href
+                else:
+                    print(f"-> Existing backup {full_href} was already downloaded previously, skipping.")
             # The Jira export page does not always render a visible download link
             # when rate-limited.  Fall back to the REST API to locate the last backup.
             api_url = self.get_existing_jira_backup()
@@ -345,6 +347,8 @@ class PlaywrightAtlassian(Atlassian):
                 print(f"-> Found existing Jira backup via REST API: {api_url}")
                 print("-> Using existing backup instead of creating a new one.")
                 return api_url
+            else:
+                print("-> No existing backup found via REST API either; re-raising rate limit error.")
             raise
 
         # ---- Check for an existing backup we haven't downloaded yet ----
@@ -390,11 +394,15 @@ class PlaywrightAtlassian(Atlassian):
                     print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
                     print("-> Using existing backup instead of creating a new one.")
                     return full_href
+                else:
+                    print(f"-> Existing backup {full_href} was already downloaded previously, skipping.")
             api_url = self.get_existing_jira_backup()
             if api_url:
                 print(f"-> Found existing Jira backup via REST API: {api_url}")
                 print("-> Using existing backup instead of creating a new one.")
                 return api_url
+            else:
+                print("-> No existing backup found via REST API either; re-raising rate limit error.")
             raise
 
         print("-> Backup process started, waiting for download link…")
@@ -447,15 +455,23 @@ class PlaywrightAtlassian(Atlassian):
         except Exception:
             pass
 
+        # ---- Wait for the page JS to finish rendering ----
+        # The Confluence backup page renders the previous backup download link via
+        # JavaScript *after* the initial HTML load event fires.  Give it 10 s to
+        # appear before we try to read it, otherwise we may capture an empty link
+        # and lose the fallback URL we need when the site is rate-limited.
+        print("-> Waiting 10 s for page to render existing backup link…")
+        time.sleep(10)
+
         # ---- Capture the existing backup link URL (if any) before clicking ----
         # The page may already show a link from a previous backup run.  We need
         # to wait for a *new* link that differs from the pre-click URL so that
         # we don't accidentally return the stale previous-backup URL.
         existing_href: str = ""
         try:
-            existing_locator = page.locator('span#backupLocation a[href]').first
-            if existing_locator.is_visible(timeout=3_000):
-                existing_href = existing_locator.get_attribute("href") or ""
+            existing_locator = page.locator('a[href*="/wiki/download/temp/"]').first
+            existing_href = existing_locator.get_attribute("href") or ""
+            print(f"-> Existing backup link found on page: {existing_href}")
         except Exception:
             pass
 
@@ -471,6 +487,17 @@ class PlaywrightAtlassian(Atlassian):
                     print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
                     print("-> Using existing backup instead of creating a new one.")
                     return full_existing_href
+                else:
+                    print(f"-> Existing backup {full_existing_href} was already downloaded previously, skipping.")
+            # The Confluence backup page may not render a visible download link when
+            # rate-limited.  Fall back to the REST API to locate the last backup.
+            api_url = self.get_existing_confluence_backup()
+            if api_url:
+                print(f"-> Found existing Confluence backup via REST API: {api_url}")
+                print("-> Using existing backup instead of creating a new one.")
+                return api_url
+            else:
+                print("-> No existing backup found via REST API either; re-raising rate limit error.")
             raise
 
         # ---- Check for an existing backup we haven't downloaded yet ----
@@ -501,6 +528,15 @@ class PlaywrightAtlassian(Atlassian):
                     print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
                     print("-> Using existing backup instead of creating a new one.")
                     return full_existing_href
+                else:
+                    print(f"-> Existing backup {full_existing_href} was already downloaded previously, skipping.")
+            api_url = self.get_existing_confluence_backup()
+            if api_url:
+                print(f"-> Found existing Confluence backup via REST API: {api_url}")
+                print("-> Using existing backup instead of creating a new one.")
+                return api_url
+            else:
+                print("-> No existing backup found via REST API either; re-raising rate limit error.")
             raise
 
         print("-> Backup process started, waiting for download link…")
@@ -513,25 +549,42 @@ class PlaywrightAtlassian(Atlassian):
         # ---- Poll until a *new* backup download link appears ----
         # We retry for up to _CONFLUENCE_BACKUP_LINK_TIMEOUT seconds, checking
         # every _CONFLUENCE_BACKUP_POLL_INTERVAL seconds.
+        # Note: some Confluence instances render the finished link as
+        # <a>Site_Backup.zip</a> with no href attribute.  We therefore match
+        # 'span#backupLocation a' (without [href]) and fall back to the REST
+        # API when the link is visible but carries no href.
         deadline = time.time() + _CONFLUENCE_BACKUP_LINK_TIMEOUT
         href = ""
         while time.time() < deadline:
             try:
-                link_locator = page.locator('span#backupLocation a[href]').first
+                link_locator = page.locator('span#backupLocation a').first
                 if link_locator.is_visible(timeout=5_000):
                     candidate = link_locator.get_attribute("href") or ""
                     if candidate and candidate != existing_href:
                         href = candidate
+                        break
+                    # Link is visible but has no href – backup may be ready;
+                    # try the REST API which returns the filename once complete.
+                    api_url = self.get_existing_confluence_backup()
+                    if api_url:
+                        print(f"-> Backup link visible but has no href; obtained URL via REST API: {api_url}")
+                        href = api_url
                         break
             except Exception:
                 pass
             time.sleep(_CONFLUENCE_BACKUP_POLL_INTERVAL)
 
         if not href:
-            raise TimeoutError(
-                f"Confluence backup did not produce a new download link within "
-                f"{_CONFLUENCE_BACKUP_LINK_TIMEOUT} seconds."
-            )
+            # One final REST API attempt before giving up entirely.
+            api_url = self.get_existing_confluence_backup()
+            if api_url:
+                print(f"-> Backup link not found on page; obtained URL via REST API: {api_url}")
+                href = api_url
+            else:
+                raise TimeoutError(
+                    f"Confluence backup did not produce a new download link within "
+                    f"{_CONFLUENCE_BACKUP_LINK_TIMEOUT} seconds."
+                )
 
         if not href.startswith("http"):
             href = f"https://{host}{href}"
