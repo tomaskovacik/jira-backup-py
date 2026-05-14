@@ -460,8 +460,8 @@ class PlaywrightAtlassian(Atlassian):
         # JavaScript *after* the initial HTML load event fires.  Give it 10 s to
         # appear before we try to read it, otherwise we may capture an empty link
         # and lose the fallback URL we need when the site is rate-limited.
-        print("-> Waiting 10 s for page to render existing backup link…")
-        time.sleep(10)
+        #print("-> Waiting 10 s for page to render existing backup link…")
+        #time.sleep(10)
 
         # ---- Capture the existing backup link URL (if any) before clicking ----
         # The page may already show a link from a previous backup run.  We need
@@ -469,9 +469,9 @@ class PlaywrightAtlassian(Atlassian):
         # we don't accidentally return the stale previous-backup URL.
         existing_href: str = ""
         try:
-            existing_locator = page.locator('span#backupLocation a[href]').first
-            if existing_locator.is_visible(timeout=3_000):
-                existing_href = existing_locator.get_attribute("href") or ""
+            existing_locator = page.locator('a[href*="/wiki/download/temp/"]').first
+            existing_href = existing_locator.get_attribute("href") or ""
+            print(f"-> Existing backup link found on page: {existing_href}")
         except Exception:
             pass
 
