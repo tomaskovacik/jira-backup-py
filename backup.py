@@ -687,7 +687,7 @@ if __name__ == '__main__':
             backup_url = atlass.create_confluence_backup()
         else:
             backup_url = atlass.create_jira_backup()
-    except RuntimeError as e:
+    except (RuntimeError, TimeoutError) as e:
         print(f'-> Backup failed: {e}')
         exit(1)
 

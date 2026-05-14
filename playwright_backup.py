@@ -549,25 +549,42 @@ class PlaywrightAtlassian(Atlassian):
         # ---- Poll until a *new* backup download link appears ----
         # We retry for up to _CONFLUENCE_BACKUP_LINK_TIMEOUT seconds, checking
         # every _CONFLUENCE_BACKUP_POLL_INTERVAL seconds.
+        # Note: some Confluence instances render the finished link as
+        # <a>Site_Backup.zip</a> with no href attribute.  We therefore match
+        # 'span#backupLocation a' (without [href]) and fall back to the REST
+        # API when the link is visible but carries no href.
         deadline = time.time() + _CONFLUENCE_BACKUP_LINK_TIMEOUT
         href = ""
         while time.time() < deadline:
             try:
-                link_locator = page.locator('span#backupLocation a[href]').first
+                link_locator = page.locator('span#backupLocation a').first
                 if link_locator.is_visible(timeout=5_000):
                     candidate = link_locator.get_attribute("href") or ""
                     if candidate and candidate != existing_href:
                         href = candidate
+                        break
+                    # Link is visible but has no href – backup may be ready;
+                    # try the REST API which returns the filename once complete.
+                    api_url = self.get_existing_confluence_backup()
+                    if api_url:
+                        print(f"-> Backup link visible but has no href; obtained URL via REST API: {api_url}")
+                        href = api_url
                         break
             except Exception:
                 pass
             time.sleep(_CONFLUENCE_BACKUP_POLL_INTERVAL)
 
         if not href:
-            raise TimeoutError(
-                f"Confluence backup did not produce a new download link within "
-                f"{_CONFLUENCE_BACKUP_LINK_TIMEOUT} seconds."
-            )
+            # One final REST API attempt before giving up entirely.
+            api_url = self.get_existing_confluence_backup()
+            if api_url:
+                print(f"-> Backup link not found on page; obtained URL via REST API: {api_url}")
+                href = api_url
+            else:
+                raise TimeoutError(
+                    f"Confluence backup did not produce a new download link within "
+                    f"{_CONFLUENCE_BACKUP_LINK_TIMEOUT} seconds."
+                )
 
         if not href.startswith("http"):
             href = f"https://{host}{href}"
