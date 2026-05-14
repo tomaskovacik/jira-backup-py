@@ -169,10 +169,15 @@ class PlaywrightAtlassian(Atlassian):
 
         On the very first run (no cookies file) a full interactive login is
         performed and the resulting cookies are persisted for future runs.
+        If headless mode is active and no cookies are present, an error is
+        raised immediately because MFA cannot be completed non-interactively.
         """
         if self._cookies_file and os.path.exists(self._cookies_file):
             print("-> Saved cookies found, skipping login and navigating directly to backup page")
             return
+
+        if self._headless:
+            self._raise_headless_login_required()
 
         self._do_login_flow(page)
 
@@ -287,11 +292,10 @@ class PlaywrightAtlassian(Atlassian):
         auth_indicators = ["atlassian.com/login", "/login", "id.atlassian.com"]
         return any(ind in url_lower for ind in auth_indicators)
 
-    def _raise_headless_session_expired(self) -> None:
-        """Raise a clear error when headless mode cannot re-authenticate after cookie expiry."""
+    def _raise_headless_login_required(self) -> None:
+        """Raise a clear error when headless mode needs an interactive login (e.g. MFA)."""
         raise RuntimeError(
-            "Saved session cookies have expired and a fresh login is required, "
-            "but Playwright is running in headless mode.\n"
+            "A fresh login is required but Playwright is running in headless mode.\n"
             "Headless mode cannot complete MFA / two-step verification interactively.\n"
             "Set PLAYWRIGHT_HEADLESS: false in config.yaml and retry so that you can "
             "complete MFA in the browser window."
@@ -311,7 +315,7 @@ class PlaywrightAtlassian(Atlassian):
         # perform a fresh login and navigate to the backup page again.
         if self._is_auth_redirect(page.url):
             if self._headless:
-                self._raise_headless_session_expired()
+                self._raise_headless_login_required()
             print("-> Session expired or not authenticated – logging in fresh")
             self._do_login_flow(page)
             page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
@@ -443,7 +447,7 @@ class PlaywrightAtlassian(Atlassian):
         # perform a fresh login and navigate to the backup page again.
         if self._is_auth_redirect(page.url):
             if self._headless:
-                self._raise_headless_session_expired()
+                self._raise_headless_login_required()
             print("-> Session expired or not authenticated – logging in fresh")
             self._do_login_flow(page)
             page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
