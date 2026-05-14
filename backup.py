@@ -124,14 +124,32 @@ class Atlassian:
             pass
         return None
 
-    def create_jira_backup(self):
-        if self.config.get('CHECK_EXISTING_BACKUP', False):
-            existing_url = self.get_existing_jira_backup()
-            if existing_url:
-                print('-> Found existing Jira backup not yet downloaded locally: {}'.format(existing_url))
-                print('-> Skipping new backup creation and using existing backup.')
-                return existing_url
+    def get_existing_confluence_backup(self):
+        """
+        Check if there is an existing Confluence backup that has not been downloaded locally.
+        Returns the backup download URL if one is found and not already present, else None.
+        Intended to detect backups created manually via the web UI.
+        """
+        try:
+            confluence_backup_status = 'https://{}/wiki/rest/obm/1.0/getprogress'.format(self.config['HOST_URL'])
+            resp = self.session.get(confluence_backup_status)
+            if resp.status_code != 200:
+                return None
+            status = json.loads(resp.text)
+            if 'fileName' not in status:
+                return None
+            backup_url = 'https://{url}/wiki/download/{file_name}'.format(
+                url=self.config['HOST_URL'], file_name=status['fileName'])
+            existing_file = self.is_already_downloaded(backup_url)
+            if existing_file:
+                print('-> Existing Confluence backup on site was already downloaded (found locally as "{}"). Skipping.'.format(existing_file))
+            else:
+                return backup_url
+        except Exception:
+            pass
+        return None
 
+    def create_jira_backup(self):
         backup = self.session.post(self.start_jira_backup, data=json.dumps(self.payload))
         task_id = ""
 
@@ -667,6 +685,23 @@ if __name__ == '__main__':
         atlass = Atlassian(config)
     
     backup_type = 'confluence' if args.confluence else 'jira'
+
+    # Step 1: Before creating a new backup, check whether the site already has a
+    # completed backup that we haven't downloaded yet.  We do this *before* triggering
+    # a new backup because the new-backup request (when issued within 24 h) returns a
+    # 406/412 error whose response can overwrite the previous backup's status, causing
+    # us to lose the download link for that backup.
+    if args.confluence:
+        existing_url = atlass.get_existing_confluence_backup()
+    else:
+        existing_url = atlass.get_existing_jira_backup()
+
+    if existing_url:
+        print('-> Found existing backup on site not yet downloaded locally: {}'.format(existing_url))
+        print('-> Downloading existing backup before attempting to create a new one.')
+        handle_completed_backup(atlass, config, existing_url, backup_type)
+
+    # Step 2: Create a new backup.
     try:
         if args.confluence:
             backup_url = atlass.create_confluence_backup()

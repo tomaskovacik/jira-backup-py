@@ -355,3 +355,118 @@ class CreateConfluenceBackupLoggingTests(unittest.TestCase):
         output = stdout.getvalue()
         self.assertIn('Existing backup available on Confluence site', output)
         self.assertNotIn('Backup process successfully started', output)
+
+
+class GetExistingConfluenceBackupTests(unittest.TestCase):
+    """Tests for get_existing_confluence_backup()."""
+
+    HOST = 'x.atlassian.net'
+    FILENAME = 'backupConfluence20260514.zip'
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        config = {
+            'USER_EMAIL': 'u@example.com',
+            'API_TOKEN': 't',
+            'HOST_URL': self.HOST,
+            'INCLUDE_ATTACHMENTS': 'true',
+        }
+        self.atlas = backup.Atlassian(config)
+
+    def _getprogress_response(self, filename=None):
+        return Mock(status_code=200, text=json.dumps({'fileName': filename or self.FILENAME}))
+
+    def test_returns_url_when_backup_not_yet_downloaded(self):
+        self.atlas.session = Mock()
+        self.atlas.session.get.return_value = self._getprogress_response()
+        # Simulate backup not yet downloaded
+        self.atlas.is_already_downloaded = Mock(return_value=None)
+
+        result = self.atlas.get_existing_confluence_backup()
+
+        expected = 'https://{}/wiki/download/{}'.format(self.HOST, self.FILENAME)
+        self.assertEqual(result, expected)
+
+    def test_returns_none_when_no_filename_in_progress(self):
+        self.atlas.session = Mock()
+        self.atlas.session.get.return_value = Mock(
+            status_code=200, text=json.dumps({'alternativePercentage': '50%', 'currentStatus': 'in progress'})
+        )
+
+        result = self.atlas.get_existing_confluence_backup()
+
+        self.assertIsNone(result)
+
+    def test_returns_none_when_getprogress_fails(self):
+        self.atlas.session = Mock()
+        self.atlas.session.get.return_value = Mock(status_code=500, text='')
+
+        result = self.atlas.get_existing_confluence_backup()
+
+        self.assertIsNone(result)
+
+    def test_logs_and_returns_none_when_backup_already_downloaded(self):
+        self.atlas.session = Mock()
+        self.atlas.session.get.return_value = self._getprogress_response()
+        # Simulate backup already present locally
+        self.atlas.is_already_downloaded = Mock(return_value='confluence_backup.zip')
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            result = self.atlas.get_existing_confluence_backup()
+
+        self.assertIsNone(result)
+        output = stdout.getvalue()
+        self.assertIn('already downloaded', output)
+        self.assertIn('confluence_backup.zip', output)
+
+    def test_returns_none_when_exception_raised(self):
+        self.atlas.session = Mock()
+        self.atlas.session.get.side_effect = Exception('network error')
+
+        result = self.atlas.get_existing_confluence_backup()
+
+        self.assertIsNone(result)
+
+
+class CreateJiraBackupAlwaysCreatesNewBackupTests(unittest.TestCase):
+    """create_jira_backup() must always attempt to create a new backup.
+
+    Previously, when CHECK_EXISTING_BACKUP was True and an existing backup was found,
+    create_jira_backup() would return the existing URL without creating a new backup.
+    The correct flow is to download the existing backup first (handled in __main__)
+    and then always proceed to create a new backup.
+    """
+
+    def setUp(self):
+        config = {
+            'USER_EMAIL': 'u@example.com',
+            'API_TOKEN': 't',
+            'HOST_URL': 'x.atlassian.net',
+            'INCLUDE_ATTACHMENTS': 'true',
+            'CHECK_EXISTING_BACKUP': True,
+        }
+        self.atlas = backup.Atlassian(config)
+        self.atlas.wait = 0
+
+    def test_always_posts_to_create_new_backup_regardless_of_existing(self):
+        """create_jira_backup() must POST to the backup endpoint unconditionally."""
+        task_id = 'task-999'
+        post_resp = Mock(status_code=200, text=json.dumps({'taskId': task_id}))
+        status_resp = Mock(status_code=200, text=json.dumps({
+            'status': 'complete',
+            'progress': '100',
+            'description': 'done',
+            'result': 'export/download?fileId={}'.format('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'),
+        }))
+        self.atlas.session = Mock()
+        self.atlas.session.post.return_value = post_resp
+        self.atlas.session.get.return_value = status_resp
+
+        result = self.atlas.create_jira_backup()
+
+        # A POST to the backup creation endpoint must have been made
+        self.atlas.session.post.assert_called_once()
+        called_url = self.atlas.session.post.call_args[0][0]
+        self.assertIn('/rest/backup/1/export/runbackup', called_url)
+        self.assertIn('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', result)
