@@ -338,6 +338,8 @@ class PlaywrightAtlassian(Atlassian):
                     print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
                     print("-> Using existing backup instead of creating a new one.")
                     return full_href
+                else:
+                    print(f"-> Existing backup {full_href} was already downloaded previously, skipping.")
             # The Jira export page does not always render a visible download link
             # when rate-limited.  Fall back to the REST API to locate the last backup.
             api_url = self.get_existing_jira_backup()
@@ -345,6 +347,8 @@ class PlaywrightAtlassian(Atlassian):
                 print(f"-> Found existing Jira backup via REST API: {api_url}")
                 print("-> Using existing backup instead of creating a new one.")
                 return api_url
+            else:
+                print("-> No existing backup found via REST API either; re-raising rate limit error.")
             raise
 
         # ---- Check for an existing backup we haven't downloaded yet ----
@@ -390,11 +394,15 @@ class PlaywrightAtlassian(Atlassian):
                     print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
                     print("-> Using existing backup instead of creating a new one.")
                     return full_href
+                else:
+                    print(f"-> Existing backup {full_href} was already downloaded previously, skipping.")
             api_url = self.get_existing_jira_backup()
             if api_url:
                 print(f"-> Found existing Jira backup via REST API: {api_url}")
                 print("-> Using existing backup instead of creating a new one.")
                 return api_url
+            else:
+                print("-> No existing backup found via REST API either; re-raising rate limit error.")
             raise
 
         print("-> Backup process started, waiting for download link…")
@@ -471,6 +479,8 @@ class PlaywrightAtlassian(Atlassian):
                     print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
                     print("-> Using existing backup instead of creating a new one.")
                     return full_existing_href
+                else:
+                    print(f"-> Existing backup {full_existing_href} was already downloaded previously, skipping.")
             raise
 
         # ---- Check for an existing backup we haven't downloaded yet ----
@@ -501,6 +511,8 @@ class PlaywrightAtlassian(Atlassian):
                     print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
                     print("-> Using existing backup instead of creating a new one.")
                     return full_existing_href
+                else:
+                    print(f"-> Existing backup {full_existing_href} was already downloaded previously, skipping.")
             raise
 
         print("-> Backup process started, waiting for download link…")
