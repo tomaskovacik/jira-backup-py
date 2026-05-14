@@ -27,6 +27,14 @@ The class reads three extra keys from *config*:
 * ``PLAYWRIGHT_COOKIES_FILE`` (str, default ``"playwright_cookies.json"``) –
   path to a JSON file where browser session cookies are persisted between runs.
   Set to an empty string ``""`` to disable cookie persistence.
+* ``PLAYWRIGHT_CLI_MFA`` (bool, default ``False``) – when ``True`` and running
+  in headless mode, the script will pause at the MFA / two-step verification
+  step and prompt the user to type their TOTP code in the terminal.  The code
+  is then filled into the browser automatically.  This allows fully headless,
+  automated logins where MFA is required without opening a visible browser.
+* ``PLAYWRIGHT_REMEMBER_ME`` (bool, default ``False``) – when ``True`` the
+  "Keep me logged in" / "Remember me" checkbox on the Atlassian login page is
+  checked before submitting the password form.
 """
 
 import json
@@ -107,6 +115,10 @@ class PlaywrightAtlassian(Atlassian):
             os.path.dirname(os.path.abspath(__file__)), "playwright_cookies.json"
         )
         self._cookies_file: str = config.get("PLAYWRIGHT_COOKIES_FILE", _default_cookies_file)
+        # CLI MFA: prompt for TOTP code at the terminal when running headless
+        self._cli_mfa: bool = bool(config.get("PLAYWRIGHT_CLI_MFA", False))
+        # Remember-me: tick the "Keep me logged in" checkbox before submitting
+        self._remember_me: bool = bool(config.get("PLAYWRIGHT_REMEMBER_ME", False))
 
     # ------------------------------------------------------------------
     # Public API (mirroring Atlassian)
@@ -221,6 +233,21 @@ class PlaywrightAtlassian(Atlassian):
             password_field = page.locator('input[type="password"]').first
             password_field.fill(self.config["API_TOKEN"])
 
+        # ---- "Keep me logged in" / "Remember me" checkbox ----
+        if self._remember_me:
+            for locator in (
+                page.get_by_label("Keep me logged in", exact=False),
+                page.get_by_label("Remember me", exact=False),
+                page.locator('input[name="rememberMe"], input[id*="remember"], input[id*="keep-me"]'),
+            ):
+                try:
+                    if locator.is_visible(timeout=3_000) and not locator.is_checked():
+                        locator.check()
+                        print("-> 'Keep me logged in' checkbox checked.")
+                        break
+                except Exception:
+                    continue
+
         # ---- Submit ----
         try:
             page.get_by_role("button", name="Log in").click()
@@ -256,35 +283,141 @@ class PlaywrightAtlassian(Atlassian):
             )
 
     def _handle_mfa(self, page) -> None:
-        """Detect an MFA prompt and either wait (headed) or raise (headless)."""
-        # Heuristic: if we are still on a login / verification page after auth
+        """Detect an MFA prompt and handle it based on the configured mode.
+
+        Three strategies are available:
+        1. **Headed mode** – wait for the human to complete MFA in the browser
+           window within ``PLAYWRIGHT_MFA_TIMEOUT`` seconds.
+        2. **Headless + CLI MFA** (``PLAYWRIGHT_CLI_MFA: true``) – prompt the
+           user to enter their TOTP code at the terminal; fill it into the
+           browser's MFA input field automatically and submit.
+        3. **Headless without CLI MFA** – raise an error.
+        """
         mfa_indicators = ["verify", "mfa", "two-step", "two-factor", "verification"]
-        if any(indicator in page.url.lower() for indicator in mfa_indicators):
-            if not self._headless:
-                print(
-                    f"-> MFA / two-step verification detected.\n"
-                    f"   Complete it in the browser window within {self._mfa_timeout} seconds."
-                )
-                deadline = time.time() + self._mfa_timeout
-                host = self.config["HOST_URL"]
-                login_timeout_ms = self._login_timeout * 1_000
-                while time.time() < deadline:
-                    if host in page.url and not any(i in page.url.lower() for i in mfa_indicators):
-                        print("-> MFA completed, continuing.")
-                        try:
-                            page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
-                        except PlaywrightTimeoutError:
-                            print("-> Warning: page did not reach networkidle after MFA; continuing")
-                        return
-                    time.sleep(2)
-                raise TimeoutError(
-                    f"MFA was not completed within {self._mfa_timeout} seconds."
-                )
-            else:
-                raise RuntimeError(
-                    "MFA / two-step verification is required but Playwright is running in "
-                    "headless mode.  Set PLAYWRIGHT_HEADLESS: false in config.yaml and retry."
-                )
+        if not any(indicator in page.url.lower() for indicator in mfa_indicators):
+            return
+
+        if not self._headless:
+            # Headed mode: user completes MFA interactively in the browser window
+            print(
+                f"-> MFA / two-step verification detected.\n"
+                f"   Complete it in the browser window within {self._mfa_timeout} seconds."
+            )
+            deadline = time.time() + self._mfa_timeout
+            host = self.config["HOST_URL"]
+            login_timeout_ms = self._login_timeout * 1_000
+            while time.time() < deadline:
+                if host in page.url and not any(i in page.url.lower() for i in mfa_indicators):
+                    print("-> MFA completed, continuing.")
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
+                    except PlaywrightTimeoutError:
+                        print("-> Warning: page did not reach networkidle after MFA; continuing")
+                    return
+                time.sleep(2)
+            raise TimeoutError(
+                f"MFA was not completed within {self._mfa_timeout} seconds."
+            )
+
+        if self._cli_mfa:
+            self._handle_cli_mfa(page)
+            return
+
+        raise RuntimeError(
+            "MFA / two-step verification is required but Playwright is running in "
+            "headless mode.  Options:\n"
+            "  1. Set PLAYWRIGHT_CLI_MFA: true in config.yaml to enter your TOTP code "
+            "at the terminal (headless mode).\n"
+            "  2. Set PLAYWRIGHT_HEADLESS: false in config.yaml to complete MFA in a "
+            "browser window."
+        )
+
+    def _handle_cli_mfa(self, page) -> None:
+        """Prompt the user for their TOTP code, fill it in the browser, and submit.
+
+        Called when ``PLAYWRIGHT_CLI_MFA`` is enabled and an MFA page is
+        detected.  The code is valid for ~30 seconds so the user is instructed
+        to retrieve a *fresh* code just before typing it.
+        """
+        print(
+            "-> MFA / two-step verification detected (headless CLI mode).\n"
+            "   Open your authenticator app, wait for a fresh code (one that has\n"
+            "   at least ~20 seconds remaining), then enter it below."
+        )
+        mfa_code = input("-> Enter MFA code: ").strip()
+        if not mfa_code:
+            raise ValueError("No MFA code was entered; aborting login.")
+
+        login_timeout_ms = self._login_timeout * 1_000
+
+        # Try a sequence of selectors that cover Atlassian's MFA input variants
+        mfa_input_selectors = [
+            'input[autocomplete="one-time-code"]',
+            'input[name="code"]',
+            'input[name="pin"]',
+            'input[placeholder*="code" i]',
+            'input[placeholder*="digit" i]',
+            'input[type="tel"]',
+            'input[type="number"]',
+            'input[type="text"][maxlength]',
+        ]
+        mfa_field = None
+        for selector in mfa_input_selectors:
+            try:
+                candidate = page.locator(selector).first
+                if candidate.is_visible(timeout=3_000):
+                    mfa_field = candidate
+                    break
+            except Exception:
+                continue
+
+        if mfa_field is None:
+            raise RuntimeError(
+                "Could not locate the MFA code input field on the page.\n"
+                f"Current URL: {page.url}\n"
+                "Please report this as a bug or switch to headed mode "
+                "(PLAYWRIGHT_HEADLESS: false) and complete MFA manually."
+            )
+
+        mfa_field.fill(mfa_code)
+
+        # Submit: try known button labels then fall back to the first submit button
+        submitted = False
+        for button_name in ("Verify", "Continue", "Submit", "Log in", "Sign in"):
+            try:
+                btn = page.get_by_role("button", name=button_name)
+                if btn.is_visible(timeout=2_000):
+                    btn.click()
+                    submitted = True
+                    break
+            except Exception:
+                continue
+        if not submitted:
+            try:
+                page.locator('button[type="submit"], input[type="submit"]').first.click()
+                submitted = True
+            except Exception:
+                pass
+        if not submitted:
+            # Last resort: press Enter in the input field
+            mfa_field.press("Enter")
+
+        print("-> MFA code submitted, waiting for redirect…")
+        try:
+            page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
+        except PlaywrightTimeoutError:
+            print("-> Warning: page did not reach networkidle after MFA submit; continuing")
+
+        mfa_indicators = ["verify", "mfa", "two-step", "two-factor", "verification"]
+        if any(ind in page.url.lower() for ind in mfa_indicators):
+            raise RuntimeError(
+                f"MFA submission did not redirect away from the verification page.\n"
+                f"Current URL: {page.url}\n"
+                "The code may have been incorrect or expired. "
+                "Please re-run the script and try again with a fresh code."
+            )
+
+        print("-> MFA completed via CLI input.")
 
     def _is_auth_redirect(self, url: str) -> bool:
         """Return True when *url* indicates an authentication redirect."""
@@ -296,9 +429,11 @@ class PlaywrightAtlassian(Atlassian):
         """Raise a clear error when headless mode needs an interactive login (e.g. MFA)."""
         raise RuntimeError(
             "A fresh login is required but Playwright is running in headless mode.\n"
-            "Headless mode cannot complete MFA / two-step verification interactively.\n"
-            "Set PLAYWRIGHT_HEADLESS: false in config.yaml and retry so that you can "
-            "complete MFA in the browser window."
+            "Options:\n"
+            "  1. Set PLAYWRIGHT_CLI_MFA: true in config.yaml to enter your TOTP code "
+            "at the terminal while the browser runs headlessly.\n"
+            "  2. Set PLAYWRIGHT_HEADLESS: false in config.yaml to complete MFA in a "
+            "browser window."
         )
 
     def _do_jira_backup(self, page) -> str:
