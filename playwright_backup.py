@@ -69,6 +69,12 @@ _CONFLUENCE_BACKUP_LINK_TIMEOUT: int = 600  # 10 minutes
 # Seconds between polling attempts when waiting for a new backup link.
 _CONFLUENCE_BACKUP_POLL_INTERVAL: int = 5
 
+# Milliseconds to use when quickly checking whether an element is currently
+# visible (e.g. optional checkboxes or MFA input fields).  Intentionally
+# shorter than the full login timeout to avoid long hangs on elements that
+# simply don't exist on the current page.
+_QUICK_VISIBILITY_TIMEOUT_MS: int = 3_000
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -241,7 +247,7 @@ class PlaywrightAtlassian(Atlassian):
                 page.locator('input[name="rememberMe"], input[id*="remember"], input[id*="keep-me"]'),
             ):
                 try:
-                    if locator.is_visible(timeout=3_000) and not locator.is_checked():
+                    if locator.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS) and not locator.is_checked():
                         locator.check()
                         print("-> 'Keep me logged in' checkbox checked.")
                         break
@@ -365,7 +371,7 @@ class PlaywrightAtlassian(Atlassian):
         for selector in mfa_input_selectors:
             try:
                 candidate = page.locator(selector).first
-                if candidate.is_visible(timeout=3_000):
+                if candidate.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS):
                     mfa_field = candidate
                     break
             except Exception:
@@ -386,7 +392,7 @@ class PlaywrightAtlassian(Atlassian):
         for button_name in ("Verify", "Continue", "Submit", "Log in", "Sign in"):
             try:
                 btn = page.get_by_role("button", name=button_name)
-                if btn.is_visible(timeout=2_000):
+                if btn.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS):
                     btn.click()
                     submitted = True
                     break
