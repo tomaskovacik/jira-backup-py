@@ -22,8 +22,13 @@ import urllib3
 def read_config(path=''):
     if path == '':
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.yaml')
-    with open(path, 'r') as config_file:
-        return yaml.full_load(config_file)
+    try:
+        with open(path, 'r') as config_file:
+            return yaml.full_load(config_file)
+    except FileNotFoundError:
+        print(f'-> Config file not found: {path}')
+        print('-> Copy config.yaml.example to config.yaml and edit it, or run with "-w" to use the config wizard.')
+        exit(1)
 
 
 class Atlassian:
