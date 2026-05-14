@@ -79,7 +79,10 @@ class Atlassian:
         if backup.status_code not in (200, 406):
             raise Exception(backup, backup.text)
 
-        print('-> Backup process successfully started')
+        if backup.status_code == 406:
+            print('-> Existing backup available on Confluence site. Checking status of existing backup.')
+        else:
+            print('-> Backup process successfully started')
         confluence_backup_status = 'https://{}/wiki/rest/obm/1.0/getprogress'.format(self.config['HOST_URL'])
         time.sleep(self.wait)
         while 'fileName' not in self.backup_status.keys():
@@ -112,7 +115,10 @@ class Atlassian:
             backup_url = '{prefix}/{result_id}'.format(
                 prefix='https://' + self.config['HOST_URL'] + '/plugins/servlet',
                 result_id=status['result'])
-            if not self.is_already_downloaded(backup_url):
+            existing_file = self.is_already_downloaded(backup_url)
+            if existing_file:
+                print('-> Existing Jira backup on site was already downloaded (found in local registry as "{}"). Skipping.'.format(existing_file))
+            else:
                 return backup_url
         except Exception:
             pass

@@ -263,3 +263,95 @@ class UnzipBackupRegistryTests(unittest.TestCase):
         self.assertEqual(registry[self.UUID]['backup_type'], 'jira')
         # zip should have been removed
         self.assertFalse(os.path.exists(zip_path))
+
+
+class GetExistingJiraBackupRegistryLoggingTests(unittest.TestCase):
+    """Tests that get_existing_jira_backup logs when the backup is already in the registry."""
+
+    UUID = '12345678-1234-1234-1234-123456789abc'
+    BACKUP_URL = 'https://x.atlassian.net/plugins/servlet/export/download?fileId=12345678-1234-1234-1234-123456789abc'
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        config = {
+            'USER_EMAIL': 'u@example.com',
+            'API_TOKEN': 't',
+            'HOST_URL': 'x.atlassian.net',
+            'INCLUDE_ATTACHMENTS': 'true',
+        }
+        self.atlas = backup.Atlassian(config)
+        registry_path = os.path.join(self.tmp, '.backup_registry.json')
+        self.atlas._registry_path = lambda: registry_path
+
+    def _write_registry(self, data):
+        path = self.atlas._registry_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(data, f)
+
+    def test_logs_and_returns_none_when_backup_already_in_registry(self):
+        self._write_registry({
+            self.UUID: {'filename': 'jira_backup.zip', 'backup_type': 'jira', 'downloaded_at': '2026-05-01T10:30:00'},
+        })
+        status_resp = Mock(status_code=200, text=json.dumps({'result': 'export/download?fileId={}'.format(self.UUID)}))
+        last_resp = Mock(status_code=200, text='task-1')
+
+        self.atlas.session = Mock()
+        self.atlas.session.get.side_effect = [last_resp, status_resp]
+
+        stdout = io.StringIO()
+        with patch('os.path.isdir', return_value=False):
+            with redirect_stdout(stdout):
+                result = self.atlas.get_existing_jira_backup()
+
+        self.assertIsNone(result)
+        output = stdout.getvalue()
+        self.assertIn('already downloaded', output)
+        self.assertIn('jira_backup.zip', output)
+
+
+class CreateConfluenceBackupLoggingTests(unittest.TestCase):
+    """Tests that create_confluence_backup logs the right message for 200 vs 406."""
+
+    def setUp(self):
+        config = {
+            'USER_EMAIL': 'u@example.com',
+            'API_TOKEN': 't',
+            'HOST_URL': 'x.atlassian.net',
+            'INCLUDE_ATTACHMENTS': 'true',
+        }
+        self.atlas = backup.Atlassian(config)
+        self.atlas.wait = 0
+
+    def _status_response(self, filename='backup.zip'):
+        return Mock(status_code=200, text=json.dumps({
+            'alternativePercentage': '100%',
+            'currentStatus': 'done',
+            'fileName': filename,
+        }))
+
+    def test_logs_started_on_200(self):
+        self.atlas.session = Mock()
+        self.atlas.session.post.return_value = Mock(status_code=200)
+        self.atlas.session.get.return_value = self._status_response()
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            self.atlas.create_confluence_backup()
+
+        output = stdout.getvalue()
+        self.assertIn('Backup process successfully started', output)
+        self.assertNotIn('Existing backup available', output)
+
+    def test_logs_existing_backup_on_406(self):
+        self.atlas.session = Mock()
+        self.atlas.session.post.return_value = Mock(status_code=406)
+        self.atlas.session.get.return_value = self._status_response()
+
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            self.atlas.create_confluence_backup()
+
+        output = stdout.getvalue()
+        self.assertIn('Existing backup available on Confluence site', output)
+        self.assertNotIn('Backup process successfully started', output)
