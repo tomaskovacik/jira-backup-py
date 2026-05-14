@@ -194,7 +194,7 @@ class PlaywrightAtlassian(Atlassian):
             print("-> Saved cookies found, skipping login and navigating directly to backup page")
             return
 
-        if self._headless:
+        if self._headless and not self._cli_mfa:
             self._raise_headless_login_required()
 
         self._do_login_flow(page)
@@ -455,7 +455,7 @@ class PlaywrightAtlassian(Atlassian):
         # If we were redirected to a login page (e.g. saved cookies expired),
         # perform a fresh login and navigate to the backup page again.
         if self._is_auth_redirect(page.url):
-            if self._headless:
+            if self._headless and not self._cli_mfa:
                 self._raise_headless_login_required()
             print("-> Session expired or not authenticated – logging in fresh")
             self._do_login_flow(page)
@@ -595,7 +595,7 @@ class PlaywrightAtlassian(Atlassian):
         # If we were redirected to a login page (e.g. saved cookies expired),
         # perform a fresh login and navigate to the backup page again.
         if self._is_auth_redirect(page.url):
-            if self._headless:
+            if self._headless and not self._cli_mfa:
                 self._raise_headless_login_required()
             print("-> Session expired or not authenticated – logging in fresh")
             self._do_login_flow(page)

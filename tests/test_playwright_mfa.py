@@ -276,5 +276,98 @@ class RememberMeTests(unittest.TestCase):
         checkbox.check.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# Tests for auth-redirect guard in _do_jira_backup / _do_confluence_backup
+# ---------------------------------------------------------------------------
+
+class AuthRedirectGuardTests(unittest.TestCase):
+    """The auth-redirect guard must allow _do_login_flow when CLI MFA is on."""
+
+    def _make(self, extra_config=None):
+        instance, _ = _make_instance(extra_config)
+        return instance
+
+    def _page_redirected_then_ok(self, backup_url):
+        """Return a page that starts on a login URL then 'loads' the backup page."""
+        page = MagicMock()
+        # First call: auth redirect; subsequent calls: backup page
+        urls = iter(["https://id.atlassian.com/login", backup_url])
+        type(page).url = property(lambda self, _it=urls: next(_it, backup_url))
+        return page
+
+    def test_jira_headless_cli_mfa_calls_login_flow_on_redirect(self):
+        """_do_jira_backup must call _do_login_flow (not raise) when headless+cli_mfa."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": True})
+        backup_page = f"https://example.atlassian.net/secure/admin/CloudExport.jspa"
+        page = self._page_redirected_then_ok(backup_page)
+
+        # Raise a sentinel so we stop immediately after _do_login_flow is called
+        class _LoginCalled(Exception):
+            pass
+
+        inst._do_login_flow = MagicMock(side_effect=_LoginCalled)
+
+        with self.assertRaises(_LoginCalled):
+            inst._do_jira_backup(page)
+
+        inst._do_login_flow.assert_called_once_with(page)
+
+    def test_jira_headless_no_cli_mfa_raises_on_redirect(self):
+        """_do_jira_backup must raise when headless and cli_mfa is off."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": False})
+        page = MagicMock()
+        page.url = "https://id.atlassian.com/login"
+
+        with patch("time.sleep"):
+            with self.assertRaises(RuntimeError):
+                inst._do_jira_backup(page)
+
+    def test_confluence_headless_cli_mfa_calls_login_flow_on_redirect(self):
+        """_do_confluence_backup must call _do_login_flow (not raise) when headless+cli_mfa."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": True})
+        backup_page = "https://example.atlassian.net/wiki/plugins/servlet/ondemandbackupmanager/admin"
+        page = self._page_redirected_then_ok(backup_page)
+
+        # Raise a sentinel so we stop immediately after _do_login_flow is called
+        class _LoginCalled(Exception):
+            pass
+
+        inst._do_login_flow = MagicMock(side_effect=_LoginCalled)
+
+        with self.assertRaises(_LoginCalled):
+            inst._do_confluence_backup(page)
+
+        inst._do_login_flow.assert_called_once_with(page)
+
+    def test_confluence_headless_no_cli_mfa_raises_on_redirect(self):
+        """_do_confluence_backup must raise when headless and cli_mfa is off."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": False})
+        page = MagicMock()
+        page.url = "https://id.atlassian.com/login"
+
+        with self.assertRaises(RuntimeError):
+            inst._do_confluence_backup(page)
+
+    def test_login_headless_cli_mfa_calls_login_flow_without_cookies(self):
+        """_login must call _do_login_flow when headless+cli_mfa and no cookies file."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": True,
+                           "PLAYWRIGHT_COOKIES_FILE": ""})
+        page = MagicMock()
+        inst._do_login_flow = MagicMock()
+
+        inst._login(page)
+
+        inst._do_login_flow.assert_called_once_with(page)
+
+    def test_login_headless_no_cli_mfa_raises_without_cookies(self):
+        """_login must raise when headless, cli_mfa off, and no cookies file."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": False,
+                           "PLAYWRIGHT_COOKIES_FILE": ""})
+        page = MagicMock()
+
+        with self.assertRaises(RuntimeError):
+            inst._login(page)
+
+
 if __name__ == "__main__":
     unittest.main()
