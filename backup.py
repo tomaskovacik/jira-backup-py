@@ -28,7 +28,7 @@ def read_config(path=''):
     except FileNotFoundError:
         print(f'-> Config file not found: {path}')
         print('-> Copy config.yaml.example to config.yaml and edit it, or run with "-w" to use the config wizard.')
-        exit(1)
+        sys.exit(1)
 
 
 class Atlassian:

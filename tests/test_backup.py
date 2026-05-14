@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+import yaml
 from contextlib import redirect_stdout
 from unittest.mock import Mock, patch
 
@@ -137,7 +138,6 @@ class ReadConfigTests(unittest.TestCase):
     def test_reads_valid_config(self):
         cfg = {'HOST_URL': 'test.atlassian.net', 'USER_EMAIL': 'a@b.com', 'API_TOKEN': 'tok', 'INCLUDE_ATTACHMENTS': 'false'}
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-            import yaml
             yaml.dump(cfg, f)
             tmp_path = f.name
         try:
