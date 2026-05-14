@@ -455,6 +455,14 @@ class PlaywrightAtlassian(Atlassian):
         except Exception:
             pass
 
+        # ---- Wait for the page JS to finish rendering ----
+        # The Confluence backup page renders the previous backup download link via
+        # JavaScript *after* the initial HTML load event fires.  Give it 10 s to
+        # appear before we try to read it, otherwise we may capture an empty link
+        # and lose the fallback URL we need when the site is rate-limited.
+        print("-> Waiting 10 s for page to render existing backup link…")
+        time.sleep(10)
+
         # ---- Capture the existing backup link URL (if any) before clicking ----
         # The page may already show a link from a previous backup run.  We need
         # to wait for a *new* link that differs from the pre-click URL so that
@@ -481,6 +489,15 @@ class PlaywrightAtlassian(Atlassian):
                     return full_existing_href
                 else:
                     print(f"-> Existing backup {full_existing_href} was already downloaded previously, skipping.")
+            # The Confluence backup page may not render a visible download link when
+            # rate-limited.  Fall back to the REST API to locate the last backup.
+            api_url = self.get_existing_confluence_backup()
+            if api_url:
+                print(f"-> Found existing Confluence backup via REST API: {api_url}")
+                print("-> Using existing backup instead of creating a new one.")
+                return api_url
+            else:
+                print("-> No existing backup found via REST API either; re-raising rate limit error.")
             raise
 
         # ---- Check for an existing backup we haven't downloaded yet ----
@@ -513,6 +530,13 @@ class PlaywrightAtlassian(Atlassian):
                     return full_existing_href
                 else:
                     print(f"-> Existing backup {full_existing_href} was already downloaded previously, skipping.")
+            api_url = self.get_existing_confluence_backup()
+            if api_url:
+                print(f"-> Found existing Confluence backup via REST API: {api_url}")
+                print("-> Using existing backup instead of creating a new one.")
+                return api_url
+            else:
+                print("-> No existing backup found via REST API either; re-raising rate limit error.")
             raise
 
         print("-> Backup process started, waiting for download link…")

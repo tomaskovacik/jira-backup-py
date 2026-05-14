@@ -118,6 +118,27 @@ class Atlassian:
             pass
         return None
 
+    def get_existing_confluence_backup(self):
+        """
+        Check if there is an existing Confluence backup that has not been downloaded locally.
+        Returns the backup download URL if one is found and not already present, else None.
+        Uses the /wiki/rest/obm/1.0/getprogress REST endpoint which carries the fileName of
+        the last completed backup even when no new backup is in progress.
+        """
+        try:
+            confluence_backup_status = 'https://{}/wiki/rest/obm/1.0/getprogress'.format(
+                self.config['HOST_URL'])
+            status = json.loads(self.session.get(confluence_backup_status).text)
+            if 'fileName' not in status:
+                return None
+            backup_url = 'https://{url}/wiki/download/{file_name}'.format(
+                url=self.config['HOST_URL'], file_name=status['fileName'])
+            if not self.is_already_downloaded(backup_url):
+                return backup_url
+        except Exception:
+            pass
+        return None
+
     def create_jira_backup(self):
         if self.config.get('CHECK_EXISTING_BACKUP', False):
             existing_url = self.get_existing_jira_backup()
