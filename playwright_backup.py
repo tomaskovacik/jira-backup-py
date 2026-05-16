@@ -40,6 +40,7 @@ The class reads three extra keys from *config*:
 import json
 import time
 import os
+import getpass
 import requests
 
 from backup import Atlassian
@@ -125,6 +126,13 @@ class PlaywrightAtlassian(Atlassian):
         self._cli_mfa: bool = bool(config.get("PLAYWRIGHT_CLI_MFA", False))
         # Remember-me: tick the "Keep me logged in" checkbox before submitting
         self._remember_me: bool = bool(config.get("PLAYWRIGHT_REMEMBER_ME", False))
+        # Debug flags for investigating interactive Atlassian login issues
+        self._debug_log_inputs: bool = bool(config.get("PLAYWRIGHT_DEBUG_LOG_INPUTS", False))
+        self._debug_browser_console: bool = bool(config.get("PLAYWRIGHT_DEBUG_BROWSER_CONSOLE", False))
+        # Terminal-entered credentials/MFA code for the current headless CLI login attempt
+        self._cli_login_email: str = ""
+        self._cli_login_password: str = ""
+        self._cli_mfa_code: str = ""
 
     # ------------------------------------------------------------------
     # Public API (mirroring Atlassian)
@@ -174,6 +182,9 @@ class PlaywrightAtlassian(Atlassian):
             except Exception as exc:
                 print(f"-> Could not load saved cookies ({exc}); will log in fresh")
         page = context.new_page()
+        if self._debug_browser_console:
+            page.on("console", self._handle_browser_console_message)
+            page.on("pageerror", self._handle_browser_page_error)
         return browser, page
 
     def _login(self, page) -> None:
@@ -187,8 +198,8 @@ class PlaywrightAtlassian(Atlassian):
 
         On the very first run (no cookies file) a full interactive login is
         performed and the resulting cookies are persisted for future runs.
-        If headless mode is active and no cookies are present, an error is
-        raised immediately because MFA cannot be completed non-interactively.
+        If headless mode is active and CLI MFA is disabled, an error is raised
+        immediately because MFA cannot be completed non-interactively.
         """
         if self._cookies_file and os.path.exists(self._cookies_file):
             print("-> Saved cookies found, skipping login and navigating directly to backup page")
@@ -201,82 +212,403 @@ class PlaywrightAtlassian(Atlassian):
 
     def _do_login_flow(self, page) -> None:
         """Perform the actual login sequence: email → password → MFA."""
+        self._prepare_cli_login_attempt()
         host = self.config["HOST_URL"]
-        login_url = f"https://{host}/login"
+        login_url = "https://id.atlassian.com/login"
+        self._log_debug_inputs()
         print(f"-> Navigating to login page: {login_url}")
         login_timeout_ms = self._login_timeout * 1_000
-        page.goto(login_url, wait_until="networkidle", timeout=login_timeout_ms)
-
-        # ---- Check for SSO redirect before we try anything ----
-        self._check_for_sso(page)
-
-        # ---- Email field ----
         try:
-            email_field = page.get_by_label("Email", exact=False)
-            email_field.wait_for(state="visible", timeout=15_000)
-            email_field.fill(self.config["USER_EMAIL"])
-        except PlaywrightTimeoutError:
-            # Some Atlassian tenants present a single combined form
-            email_field = page.locator('input[type="email"], input[name="username"]').first
-            email_field.fill(self.config["USER_EMAIL"])
+            page.goto(login_url, wait_until="domcontentloaded", timeout=login_timeout_ms)
 
-        # ---- "Continue" / "Next" button ----
+            # ---- Check for SSO redirect before we try anything ----
+            self._check_for_sso(page)
+
+            # ---- Email field ----
+            self._fill_login_field(
+                page,
+                field_name="email",
+                value=self._get_login_email(),
+                candidates=(
+                    ("input[data-testid='username']", page.locator("input[data-testid='username']")),
+                    ("input[id^='username-']", page.locator("input[id^='username-']")),
+                    ("label:Email", page.get_by_label("Email", exact=False)),
+                    ("input#username", page.locator("input#username")),
+                    ("input[name='username']", page.locator("input[name='username']")),
+                    ("input[name='email']", page.locator("input[name='email']")),
+                    ("input[type='email']", page.locator("input[type='email']")),
+                ),
+            )
+
+            # ---- "Continue" / "Next" button ----
+            self._click_login_control(
+                page,
+                control_name="continue button",
+                candidates=(
+                    ("button:Continue", page.get_by_role("button", name="Continue")),
+                    ("button:Next", page.get_by_role("button", name="Next")),
+                    ("button[type='submit']", page.locator("button[type='submit']")),
+                ),
+            )
+            page.wait_for_load_state("domcontentloaded", timeout=login_timeout_ms)
+            self._log_debug_page_state(page, "after-continue")
+
+            # ---- After "Continue", check again for SSO ----
+            self._check_for_sso(page)
+
+            # ---- Password / API token field ----
+            password_field = self._fill_login_field(
+                page,
+                field_name="password",
+                value=self._get_login_password(),
+                candidates=(
+                    ("input[data-testid='password']", page.locator("input[data-testid='password']")),
+                    ("input[autocomplete='current-password']", page.locator("input[autocomplete='current-password']")),
+                    ("input[placeholder='Enter password']", page.locator("input[placeholder='Enter password']")),
+                    ("input[id^='password-']", page.locator("input[id^='password-']")),
+                    ("label:Password", page.get_by_label("Password", exact=False)),
+                    ("input#password", page.locator("input#password")),
+                    ("input[name='password']", page.locator("input[name='password']")),
+                    ("input[type='password']", page.locator("input[type='password']")),
+                ),
+            )
+
+            # ---- "Keep me logged in" / "Remember me" checkbox ----
+            if self._remember_me:
+                for locator in (
+                    page.locator('input[data-testid="remember-me-checkbox--hidden-checkbox"]'),
+                    page.locator('input[name="remember"]'),
+                    page.get_by_label("Keep me logged in", exact=False),
+                    page.get_by_label("Remember me", exact=False),
+                    page.locator('input[name="rememberMe"], input[id*="remember"], input[id*="keep-me"]'),
+                ):
+                    try:
+                        if locator.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS) and not locator.is_checked():
+                            locator.check()
+                            print("-> 'Keep me logged in' checkbox checked.")
+                            break
+                    except Exception:
+                        continue
+
+            # ---- Submit ----
+            self._submit_password_form(page, password_field, login_timeout_ms)
+            self._log_debug_page_state(page, "after-login-submit")
+
+            # ---- MFA detection ----
+            self._handle_mfa(page)
+            self._log_debug_page_state(page, "after-mfa")
+
+            # Ensure the post-login / post-MFA page is fully loaded before continuing
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=login_timeout_ms)
+            except PlaywrightTimeoutError:
+                print("-> Warning: page did not reach domcontentloaded after MFA/login; continuing")
+            self._log_debug_page_state(page, "before-login-complete")
+
+            if self._is_auth_redirect(page.url):
+                diagnostics = self._describe_auth_page(page)
+                diagnostics_suffix = ""
+                if diagnostics:
+                    diagnostics_suffix = "\nObserved page state:\n- " + "\n- ".join(diagnostics)
+                raise RuntimeError(
+                    "Login form submission completed but Atlassian still appears to be on an "
+                    "authentication page.\n"
+                    f"Current URL: {page.url}\n"
+                    "This usually means the credentials were rejected, an additional challenge "
+                    "appeared, or Atlassian did not accept the automated form submission."
+                    f"{diagnostics_suffix}"
+                )
+
+            print("-> Login completed")
+        finally:
+            self._clear_cli_login_attempt()
+
+    def _prepare_cli_login_attempt(self) -> None:
+        """Collect terminal credentials up front for a CLI-assisted login attempt."""
+        if not self._cli_mfa:
+            return
+
+        configured_email = str(self.config.get("USER_EMAIL", "")).strip()
+        print(
+            "-> CLI-assisted login: enter your Atlassian email, password, and a fresh MFA code\n"
+            "   before Playwright submits the login form."
+        )
+        email_prompt = "-> Enter Atlassian login email"
+        if configured_email:
+            email_prompt += f" [{configured_email}]"
+        email_prompt += ": "
+        entered_email = input(email_prompt).strip()
+        self._cli_login_email = entered_email or configured_email
+        if not self._cli_login_email:
+            raise ValueError("No Atlassian login email was entered; aborting login.")
+
+        self._cli_login_password = getpass.getpass("-> Enter Atlassian login password: ").strip()
+        if not self._cli_login_password:
+            raise ValueError("No Atlassian login password was entered; aborting login.")
+
+        print(
+            "-> Wait until your authenticator app shows a fresh MFA code, then type it below.\n"
+            "   Playwright will submit that code as soon as the verification step appears."
+        )
+        self._cli_mfa_code = input("-> Enter MFA code: ").strip()
+        if not self._cli_mfa_code:
+            raise ValueError("No MFA code was entered; aborting login.")
+
+    def _clear_cli_login_attempt(self) -> None:
+        """Discard any cached terminal input after the login attempt finishes."""
+        self._cli_login_email = ""
+        self._cli_login_password = ""
+        self._cli_mfa_code = ""
+
+    def _get_login_email(self) -> str:
+        """Return the email address to use for the current browser login attempt."""
+        if self._cli_login_email:
+            return self._cli_login_email
+        return self.config["USER_EMAIL"]
+
+    def _get_login_password(self) -> str:
+        """Return the secret to use for the current browser login attempt."""
+        if self._cli_login_password:
+            return self._cli_login_password
+        return self.config["API_TOKEN"]
+
+    def _log_debug_inputs(self) -> None:
+        """Print collected login inputs when explicit debug logging is enabled."""
+        if not self._debug_log_inputs:
+            return
+
+        print("-> DEBUG login inputs follow (contains sensitive data)")
+        print(f"-> DEBUG email: {self._get_login_email()!r}")
+        print(f"-> DEBUG password: {self._get_login_password()!r}")
+        if self._cli_mfa_code:
+            print(f"-> DEBUG mfa_code: {self._cli_mfa_code!r}")
+
+    def _handle_browser_console_message(self, message) -> None:
+        """Mirror browser console messages into the app log when debug is enabled."""
         try:
-            page.get_by_role("button", name="Continue").click()
-        except PlaywrightTimeoutError:
-            page.get_by_role("button", name="Next").click()
-        page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
+            text = message.text()
+        except TypeError:
+            text = message.text
+        msg_type = getattr(message, "type", None)
+        if callable(msg_type):
+            msg_type = msg_type()
+        print(f"-> BROWSER CONSOLE [{msg_type or 'log'}] {text}")
 
-        # ---- After "Continue", check again for SSO ----
-        self._check_for_sso(page)
+    def _handle_browser_page_error(self, error) -> None:
+        """Mirror uncaught browser page errors into the app log."""
+        print(f"-> BROWSER PAGE ERROR {error}")
 
-        # ---- Password / API token field ----
+    def _log_debug_page_state(self, page, label: str) -> None:
+        """Print the current page URL/title when debug browser logging is enabled."""
+        if not self._debug_browser_console:
+            return
         try:
-            password_field = page.get_by_label("Password", exact=False)
-            password_field.wait_for(state="visible", timeout=15_000)
-            password_field.fill(self.config["API_TOKEN"])
-        except PlaywrightTimeoutError:
-            password_field = page.locator('input[type="password"]').first
-            password_field.fill(self.config["API_TOKEN"])
+            title = page.title()
+        except Exception:
+            title = "<unavailable>"
+        print(f"-> DEBUG PAGE STATE [{label}] url={page.url!r} title={title!r}")
 
-        # ---- "Keep me logged in" / "Remember me" checkbox ----
-        if self._remember_me:
-            for locator in (
-                page.get_by_label("Keep me logged in", exact=False),
-                page.get_by_label("Remember me", exact=False),
-                page.locator('input[name="rememberMe"], input[id*="remember"], input[id*="keep-me"]'),
-            ):
-                try:
-                    if locator.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS) and not locator.is_checked():
-                        locator.check()
-                        print("-> 'Keep me logged in' checkbox checked.")
-                        break
-                except Exception:
+    def _fill_login_field(self, page, field_name: str, value: str, candidates):
+        """Fill the first visible login field candidate and verify the value sticks."""
+        for candidate_name, locator in candidates:
+            try:
+                field = locator.first
+                field.wait_for(state="visible", timeout=_QUICK_VISIBILITY_TIMEOUT_MS)
+                if not field.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS):
                     continue
+                field.scroll_into_view_if_needed()
+                field.click(force=True)
+                self._clear_login_field(field)
+                self._type_login_value(page, field, value)
+                self._finalize_login_field(field)
+                actual_value = field.input_value()
+                if actual_value != value:
+                    field.fill(value, force=True)
+                    self._finalize_login_field(field)
+                    actual_value = field.input_value()
+                if actual_value != value:
+                    field.evaluate(
+                        """(element, nextValue) => {
+                            element.focus();
+                            element.value = '';
+                            element.dispatchEvent(new Event('input', { bubbles: true }));
+                            element.value = nextValue;
+                            element.dispatchEvent(new Event('input', { bubbles: true }));
+                            element.dispatchEvent(new Event('change', { bubbles: true }));
+                        }""",
+                        value,
+                    )
+                    self._finalize_login_field(field)
+                    actual_value = field.input_value()
+                if actual_value != value:
+                    continue
+                print(f"-> Filled {field_name} field via {candidate_name}")
+                return field
+            except Exception:
+                continue
 
-        # ---- Submit ----
+        raise RuntimeError(
+            f"Could not fill the {field_name} field on the Atlassian login page.\n"
+            f"Current URL: {page.url}"
+        )
+
+    def _clear_login_field(self, field) -> None:
+        """Clear the active login field before typing."""
         try:
-            page.get_by_role("button", name="Log in").click()
-        except PlaywrightTimeoutError:
-            page.get_by_role("button", name="Sign in").click()
-
-        # Wait for any post-login redirect to settle before MFA check.
-        # A timeout here is non-fatal: _handle_mfa polls the URL itself.
+            field.press("Control+A")
+            field.press("Backspace")
+        except Exception:
+            pass
         try:
-            page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
-        except PlaywrightTimeoutError:
-            print("-> Warning: page did not reach networkidle after login submit; continuing")
+            field.fill("", force=True)
+        except Exception:
+            pass
 
-        # ---- MFA detection ----
-        self._handle_mfa(page)
-
-        # Ensure the post-login / post-MFA page is fully loaded before continuing
+    def _type_login_value(self, page, field, value: str) -> None:
+        """Prefer real keystroke-style entry for Atlassian login fields."""
+        for method_name in ("press_sequentially", "type"):
+            try:
+                getattr(field, method_name)(value, delay=120)
+                return
+            except Exception:
+                continue
         try:
-            page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
-        except PlaywrightTimeoutError:
-            print("-> Warning: page did not reach networkidle after MFA/login; continuing")
+            page.keyboard.type(value, delay=120)
+        except Exception:
+            pass
 
-        print("-> Login completed")
+    def _finalize_login_field(self, field) -> None:
+        """Trigger blur/validation after entering a login field value."""
+        try:
+            field.press("Tab")
+        except Exception:
+            pass
+        time.sleep(0.2)
+
+    def _submit_password_form(self, page, password_field, login_timeout_ms: int) -> None:
+        """Submit the password step, retrying once with Enter if Atlassian ignores the click."""
+        self._click_login_control(
+            page,
+            control_name="login button",
+            candidates=(
+                ("button:Log in", page.get_by_role("button", name="Log in")),
+                ("button:Sign in", page.get_by_role("button", name="Sign in")),
+                ("button[type='submit']", page.locator("button[type='submit']")),
+            ),
+        )
+        self._wait_for_login_transition(page, login_timeout_ms, stage="login submit")
+        if not self._is_auth_redirect(page.url):
+            return
+        if not self._is_password_step_visible(page):
+            return
+        try:
+            password_field.press("Enter")
+            print("-> Login button did not advance; retried submit via Enter in password field.")
+        except Exception:
+            return
+        self._wait_for_login_transition(page, login_timeout_ms, stage="login retry")
+
+    def _wait_for_login_transition(self, page, login_timeout_ms: int, stage: str) -> None:
+        """Wait briefly for Atlassian's login UI to react to a submit action."""
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=login_timeout_ms)
+        except PlaywrightTimeoutError:
+            print(f"-> Warning: page did not reach domcontentloaded after {stage}; continuing")
+        time.sleep(0.5)
+
+    def _click_login_control(self, page, control_name: str, candidates) -> None:
+        """Click the first visible login control candidate."""
+        for candidate_name, locator in candidates:
+            try:
+                control = locator.first
+                if not control.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS):
+                    continue
+                if hasattr(control, "is_enabled") and not control.is_enabled():
+                    continue
+                control.click()
+                print(f"-> Clicked {control_name} via {candidate_name}")
+                return
+            except Exception:
+                continue
+
+        raise RuntimeError(
+            f"Could not find the {control_name} on the Atlassian login page.\n"
+            f"Current URL: {page.url}"
+        )
+
+    def _is_password_step_visible(self, page) -> bool:
+        """Return True when the password form still appears to be on screen."""
+        for selector in (
+            "input[data-testid='password']",
+            "input[autocomplete='current-password']",
+            "input#password",
+            "input[name='password']",
+            "input[type='password']",
+        ):
+            try:
+                if page.locator(selector).first.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _describe_auth_page(self, page) -> list[str]:
+        """Return short human-readable diagnostics for the current Atlassian auth page."""
+        diagnostics: list[str] = []
+        if self._is_password_step_visible(page):
+            diagnostics.append("Password field is still visible after submit.")
+        if self._is_any_selector_visible(
+            page,
+            (
+                "input#two-step-verification-otp-code-input",
+                'input[name="otpCode"]',
+                'input[autocomplete="one-time-code"]',
+            ),
+        ):
+            diagnostics.append("MFA input is visible on the page.")
+        if self._is_any_selector_visible(
+            page,
+            (
+                'iframe[src*="recaptcha"]',
+                'div[id*="captcha"]',
+                '[data-testid*="captcha"]',
+            ),
+        ):
+            diagnostics.append("A captcha or bot challenge appears to be present.")
+        for selector in (
+            '[role="alert"]',
+            '[aria-live="assertive"]',
+            '[aria-live="polite"]',
+            '[data-testid*="error"]',
+            '[data-testid*="alert"]',
+            '[id*="error"]',
+        ):
+            message = self._read_visible_text(page, selector)
+            if message:
+                diagnostics.append(f"Visible page message: {message}")
+                break
+        return diagnostics
+
+    def _is_any_selector_visible(self, page, selectors) -> bool:
+        """Return True when any selector resolves to a visible element."""
+        for selector in selectors:
+            try:
+                if page.locator(selector).first.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _read_visible_text(self, page, selector: str) -> str:
+        """Return normalized text for the first visible element matched by selector."""
+        try:
+            element = page.locator(selector).first
+            if not element.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS):
+                return ""
+            text = element.inner_text(timeout=_QUICK_VISIBILITY_TIMEOUT_MS)
+        except Exception:
+            return ""
+        return " ".join(text.split())[:300]
 
     def _check_for_sso(self, page) -> None:
         """Raise an informative error when the browser lands on a third-party SSO page."""
@@ -292,15 +624,19 @@ class PlaywrightAtlassian(Atlassian):
         """Detect an MFA prompt and handle it based on the configured mode.
 
         Three strategies are available:
-        1. **Headed mode** – wait for the human to complete MFA in the browser
-           window within ``PLAYWRIGHT_MFA_TIMEOUT`` seconds.
-        2. **Headless + CLI MFA** (``PLAYWRIGHT_CLI_MFA: true``) – prompt the
-           user to enter their TOTP code at the terminal; fill it into the
-           browser's MFA input field automatically and submit.
+        1. **CLI-assisted MFA** (``PLAYWRIGHT_CLI_MFA: true``) – prompt the user
+           to enter their TOTP code at the terminal; fill it into the browser's
+           MFA input field automatically and submit.
+        2. **Headed mode without CLI MFA** – wait for the human to complete MFA
+           in the browser window within ``PLAYWRIGHT_MFA_TIMEOUT`` seconds.
         3. **Headless without CLI MFA** – raise an error.
         """
         mfa_indicators = ["verify", "mfa", "two-step", "two-factor", "verification"]
         if not any(indicator in page.url.lower() for indicator in mfa_indicators):
+            return
+
+        if self._cli_mfa:
+            self._handle_cli_mfa(page)
             return
 
         if not self._headless:
@@ -325,10 +661,6 @@ class PlaywrightAtlassian(Atlassian):
                 f"MFA was not completed within {self._mfa_timeout} seconds."
             )
 
-        if self._cli_mfa:
-            self._handle_cli_mfa(page)
-            return
-
         raise RuntimeError(
             "MFA / two-step verification is required but Playwright is running in "
             "headless mode.  Options:\n"
@@ -346,11 +678,10 @@ class PlaywrightAtlassian(Atlassian):
         to retrieve a *fresh* code just before typing it.
         """
         print(
-            "-> MFA / two-step verification detected (headless CLI mode).\n"
-            "   Open your authenticator app, wait for a fresh code (one that has\n"
-            "   at least ~20 seconds remaining), then enter it below."
+            "-> MFA / two-step verification detected (CLI-assisted mode).\n"
+            "   Using the MFA code collected in the terminal before browser login."
         )
-        mfa_code = input("-> Enter MFA code: ").strip()
+        mfa_code = self._cli_mfa_code or input("-> Enter MFA code: ").strip()
         if not mfa_code:
             raise ValueError("No MFA code was entered; aborting login.")
 
@@ -358,6 +689,9 @@ class PlaywrightAtlassian(Atlassian):
 
         # Try a sequence of selectors that cover Atlassian's MFA input variants
         mfa_input_selectors = [
+            'input#two-step-verification-otp-code-input',
+            'input[name="otpCode"]',
+            'input[id^="two-step-verification-"]',
             'input[autocomplete="one-time-code"]',
             'input[name="code"]',
             'input[name="pin"]',

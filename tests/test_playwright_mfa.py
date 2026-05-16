@@ -49,6 +49,48 @@ def _make_instance(extra_config=None):
         return instance, playwright_backup
 
 
+def _mock_input_field():
+    """Return a mock field that behaves like a visible, fillable Playwright input."""
+    field = MagicMock()
+    field.is_visible.return_value = True
+    field._value = ""
+
+    def fill_side_effect(value, **_kwargs):
+        field._value = value
+
+    def press_side_effect(key, **_kwargs):
+        if key in ("Control+A", "Meta+A", "Backspace", "Delete"):
+            field._value = ""
+        elif key == "Tab":
+            return None
+
+    def type_side_effect(value, **_kwargs):
+        field._value = value
+
+    field.fill.side_effect = fill_side_effect
+    field.press.side_effect = press_side_effect
+    field.type.side_effect = type_side_effect
+    field.press_sequentially.side_effect = type_side_effect
+    field.input_value.side_effect = lambda: field._value
+    field.evaluate.side_effect = lambda _script, value: fill_side_effect(value)
+    return field
+
+
+def _mock_locator(target):
+    """Return a Playwright-like locator whose .first resolves to *target*."""
+    locator = MagicMock()
+    locator.first = target
+    return locator
+
+
+def _mock_hidden_element():
+    """Return a mock element that is present but not visible."""
+    element = MagicMock()
+    element.is_visible.return_value = False
+    element.inner_text.return_value = ""
+    return element
+
+
 # ---------------------------------------------------------------------------
 # Tests for _handle_mfa
 # ---------------------------------------------------------------------------
@@ -108,6 +150,16 @@ class HandleMfaTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 inst._handle_mfa(page)
 
+    def test_headed_mode_with_cli_mfa_calls_handle_cli_mfa(self):
+        """Headed mode uses CLI MFA when PLAYWRIGHT_CLI_MFA is enabled."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": False, "PLAYWRIGHT_CLI_MFA": True})
+        page = self._page()
+        inst._handle_cli_mfa = MagicMock()
+
+        inst._handle_mfa(page)
+
+        inst._handle_cli_mfa.assert_called_once_with(page)
+
 
 # ---------------------------------------------------------------------------
 # Tests for _handle_cli_mfa
@@ -139,13 +191,13 @@ class HandleCliMfaTests(unittest.TestCase):
         """_handle_cli_mfa fills the code and clicks the Verify button."""
         inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": True})
         page, mfa_input = self._page()
+        inst._cli_mfa_code = "123456"
 
         verify_btn = MagicMock()
         verify_btn.is_visible.return_value = True
         page.get_by_role.return_value = verify_btn
 
-        with patch("builtins.input", return_value="123456"):
-            inst._handle_cli_mfa(page)
+        inst._handle_cli_mfa(page)
 
         mfa_input.fill.assert_called_once_with("123456")
         verify_btn.click.assert_called_once()
@@ -207,12 +259,10 @@ class RememberMeTests(unittest.TestCase):
         page.url = "https://example.atlassian.net/dashboard"
 
         # Email field
-        email_field = MagicMock()
-        email_field.wait_for = MagicMock()
+        email_field = _mock_input_field()
 
         # Password field
-        password_field = MagicMock()
-        password_field.wait_for = MagicMock()
+        password_field = _mock_input_field()
 
         # Remember-me checkbox
         checkbox = MagicMock()
@@ -220,15 +270,23 @@ class RememberMeTests(unittest.TestCase):
         checkbox.is_checked.return_value = remember_me_checked
 
         page.get_by_label.side_effect = lambda label, **kw: (
-            email_field if "email" in label.lower()
-            else password_field if "password" in label.lower()
+            _mock_locator(email_field) if "email" in label.lower()
+            else _mock_locator(password_field) if "password" in label.lower()
             else checkbox
         )
 
         # Buttons
         btn = MagicMock()
-        btn.is_visible.return_value = False
-        page.get_by_role.return_value = btn
+        btn.is_visible.return_value = True
+        btn.is_enabled.return_value = True
+        page.get_by_role.return_value = _mock_locator(btn)
+
+        def locator_side_effect(selector):
+            if "submit" in selector:
+                return _mock_locator(btn)
+            return _mock_locator(MagicMock())
+
+        page.locator.side_effect = locator_side_effect
 
         return page, checkbox
 
@@ -282,7 +340,6 @@ class RememberMeTests(unittest.TestCase):
 
 class AuthRedirectGuardTests(unittest.TestCase):
     """The auth-redirect guard must allow _do_login_flow when CLI MFA is on."""
-
     def _make(self, extra_config=None):
         instance, _ = _make_instance(extra_config)
         return instance
@@ -328,7 +385,6 @@ class AuthRedirectGuardTests(unittest.TestCase):
         backup_page = "https://example.atlassian.net/wiki/plugins/servlet/ondemandbackupmanager/admin"
         page = self._page_redirected_then_ok(backup_page)
 
-        # Raise a sentinel so we stop immediately after _do_login_flow is called
         class _LoginCalled(Exception):
             pass
 
@@ -348,26 +404,286 @@ class AuthRedirectGuardTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             inst._do_confluence_backup(page)
 
-    def test_login_headless_cli_mfa_calls_login_flow_without_cookies(self):
-        """_login must call _do_login_flow when headless+cli_mfa and no cookies file."""
-        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": True,
-                           "PLAYWRIGHT_COOKIES_FILE": ""})
+
+class HeadlessCliMfaLoginGuardTests(unittest.TestCase):
+    def _make(self, extra_config=None):
+        instance, _ = _make_instance(extra_config)
+        return instance
+
+    def test_login_raises_in_headless_mode_without_cli_mfa(self):
+        """_login raises when a fresh headless login cannot prompt for MFA."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": False})
+        page = MagicMock()
+
+        with patch("os.path.exists", return_value=False):
+            with self.assertRaises(RuntimeError):
+                inst._login(page)
+
+    def test_login_allows_headless_mode_with_cli_mfa(self):
+        """_login delegates to _do_login_flow when CLI MFA is enabled."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": True})
         page = MagicMock()
         inst._do_login_flow = MagicMock()
 
-        inst._login(page)
+        with patch("os.path.exists", return_value=False):
+            inst._login(page)
 
         inst._do_login_flow.assert_called_once_with(page)
 
-    def test_login_headless_no_cli_mfa_raises_without_cookies(self):
-        """_login must raise when headless, cli_mfa off, and no cookies file."""
-        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": False,
-                           "PLAYWRIGHT_COOKIES_FILE": ""})
+
+class HeadlessCliPromptTests(unittest.TestCase):
+    def _make(self, extra_config=None):
+        instance, _ = _make_instance(extra_config)
+        return instance
+
+    def test_prepare_cli_login_attempt_collects_terminal_inputs(self):
+        """CLI MFA prompts for email, password, and MFA code before login."""
+        inst = self._make(
+            {
+                "PLAYWRIGHT_HEADLESS": False,
+                "PLAYWRIGHT_CLI_MFA": True,
+                "USER_EMAIL": "configured@example.com",
+            }
+        )
+
+        with patch("builtins.input", side_effect=["", "654321"]), patch(
+            "playwright_backup.getpass.getpass",
+            return_value="browser-password",
+        ):
+            inst._prepare_cli_login_attempt()
+
+        self.assertEqual(inst._cli_login_email, "configured@example.com")
+        self.assertEqual(inst._cli_login_password, "browser-password")
+        self.assertEqual(inst._cli_mfa_code, "654321")
+
+    def test_prepare_cli_login_attempt_rejects_missing_password(self):
+        """CLI MFA requires a terminal password before login starts."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": False, "PLAYWRIGHT_CLI_MFA": True})
+
+        with patch("builtins.input", side_effect=["user@example.com"]), patch(
+            "playwright_backup.getpass.getpass",
+            return_value="",
+        ):
+            with self.assertRaises(ValueError) as ctx:
+                inst._prepare_cli_login_attempt()
+
+        self.assertIn("password", str(ctx.exception).lower())
+
+    def test_do_login_flow_uses_prompted_email_and_password(self):
+        """_do_login_flow fills the prompted browser credentials instead of config values."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": False, "PLAYWRIGHT_CLI_MFA": True})
+        page = MagicMock()
+        page.url = "https://example.atlassian.net/dashboard"
+
+        email_field = _mock_input_field()
+        password_field = _mock_input_field()
+        remember_me = MagicMock()
+        remember_me.is_visible.return_value = False
+
+        page.get_by_label.side_effect = lambda label, **kw: (
+            _mock_locator(email_field) if "email" in label.lower()
+            else _mock_locator(password_field) if "password" in label.lower()
+            else remember_me
+        )
+
+        button = MagicMock()
+        button.is_visible.return_value = True
+        button.is_enabled.return_value = True
+        page.get_by_role.return_value = _mock_locator(button)
+        page.goto = MagicMock()
+        page.wait_for_load_state = MagicMock()
+        page.locator.side_effect = lambda selector: _mock_locator(button if "submit" in selector else MagicMock())
+
+        inst._check_for_sso = MagicMock()
+        inst._handle_mfa = MagicMock()
+
+        with patch("builtins.input", side_effect=["prompted@example.com", "123456"]), patch(
+            "playwright_backup.getpass.getpass",
+            return_value="prompted-password",
+        ):
+            inst._do_login_flow(page)
+
+        self.assertEqual(email_field._value, "prompted@example.com")
+        self.assertEqual(password_field._value, "prompted-password")
+        self.assertEqual(inst._cli_login_email, "")
+        self.assertEqual(inst._cli_login_password, "")
+        self.assertEqual(inst._cli_mfa_code, "")
+
+
+class LoginFieldFallbackTests(unittest.TestCase):
+    def _make(self, extra_config=None):
+        instance, _ = _make_instance(extra_config)
+        return instance
+
+    def test_fill_login_field_uses_js_fallback_when_fill_does_not_stick(self):
+        """_fill_login_field falls back to JS value injection when normal fill is ignored."""
+        inst = self._make()
+        page = MagicMock()
+        page.url = "https://id.atlassian.com/login"
+        field = _mock_input_field()
+
+        def ignore_fill(_value, **_kwargs):
+            return None
+
+        def ignore_type(_value, **_kwargs):
+            return None
+
+        field.fill.side_effect = ignore_fill
+        field.type.side_effect = ignore_type
+        field.press_sequentially.side_effect = ignore_type
+        field.evaluate.side_effect = lambda _script, value: setattr(field, "_value", value)
+
+        inst._fill_login_field(
+            page,
+            field_name="email",
+            value="user@example.com",
+            candidates=(("input[data-testid='username']", _mock_locator(field)),),
+        )
+
+        self.assertEqual(field._value, "user@example.com")
+        field.evaluate.assert_called()
+
+
+class LoginSubmitTests(unittest.TestCase):
+    def _make(self, extra_config=None):
+        instance, _ = _make_instance(extra_config)
+        return instance
+
+    def test_submit_password_form_retries_with_enter_when_password_step_remains_visible(self):
+        """Password submit retries with Enter when the click leaves Atlassian on the password page."""
+        inst = self._make()
+        page = MagicMock()
+        page.url = "https://id.atlassian.com/login?email=user%40example.com"
+        password_field = _mock_input_field()
+        button = MagicMock()
+        button.is_visible.return_value = True
+        button.is_enabled.return_value = True
+
+        page.get_by_role.return_value = _mock_locator(button)
+
+        def locator_side_effect(selector):
+            if selector == "button[type='submit']":
+                return _mock_locator(button)
+            if "password" in selector:
+                return _mock_locator(password_field)
+            return _mock_locator(_mock_hidden_element())
+
+        page.locator.side_effect = locator_side_effect
+        inst._wait_for_login_transition = MagicMock()
+
+        inst._submit_password_form(page, password_field, 10_000)
+
+        button.click.assert_called_once()
+        password_field.press.assert_any_call("Enter")
+        self.assertEqual(inst._wait_for_login_transition.call_count, 2)
+
+    def test_describe_auth_page_reports_visible_hints(self):
+        """Auth-page diagnostics include password, captcha, and visible error text."""
+        inst = self._make()
         page = MagicMock()
 
-        with self.assertRaises(RuntimeError):
-            inst._login(page)
+        password_field = _mock_input_field()
+        captcha = MagicMock()
+        captcha.is_visible.return_value = True
+        error = MagicMock()
+        error.is_visible.return_value = True
+        error.inner_text.return_value = "Incorrect email and/or password."
 
+        def locator_side_effect(selector):
+            if "password" in selector:
+                return _mock_locator(password_field)
+            if "captcha" in selector:
+                return _mock_locator(captcha)
+            if selector == '[role="alert"]':
+                return _mock_locator(error)
+            return _mock_locator(_mock_hidden_element())
+
+        page.locator.side_effect = locator_side_effect
+
+        diagnostics = inst._describe_auth_page(page)
+
+        self.assertIn("Password field is still visible after submit.", diagnostics)
+        self.assertIn("A captcha or bot challenge appears to be present.", diagnostics)
+        self.assertIn("Visible page message: Incorrect email and/or password.", diagnostics)
+
+
+class DebugLoggingTests(unittest.TestCase):
+    def _make(self, extra_config=None):
+        instance, _ = _make_instance(extra_config)
+        return instance
+
+    def test_log_debug_inputs_prints_sensitive_values_when_enabled(self):
+        """_log_debug_inputs emits collected login inputs when debug logging is enabled."""
+        inst = self._make({"PLAYWRIGHT_DEBUG_LOG_INPUTS": True})
+        inst._cli_login_email = "user@example.com"
+        inst._cli_login_password = "browser-password"
+        inst._cli_mfa_code = "123456"
+
+        with patch("builtins.print") as mock_print:
+            inst._log_debug_inputs()
+
+        mock_print.assert_any_call("-> DEBUG login inputs follow (contains sensitive data)")
+        mock_print.assert_any_call("-> DEBUG email: 'user@example.com'")
+        mock_print.assert_any_call("-> DEBUG password: 'browser-password'")
+        mock_print.assert_any_call("-> DEBUG mfa_code: '123456'")
+
+    def test_launch_registers_browser_console_handlers_when_enabled(self):
+        """_launch wires browser console and pageerror handlers when debug is enabled."""
+        inst = self._make({"PLAYWRIGHT_DEBUG_BROWSER_CONSOLE": True})
+        pw = MagicMock()
+        browser = MagicMock()
+        context = MagicMock()
+        page = MagicMock()
+        pw.chromium.launch.return_value = browser
+        browser.new_context.return_value = context
+        context.new_page.return_value = page
+
+        inst._launch(pw)
+
+        page.on.assert_any_call("console", inst._handle_browser_console_message)
+        page.on.assert_any_call("pageerror", inst._handle_browser_page_error)
+
+    def test_jira_backup_raises_in_headless_mode_without_cli_mfa(self):
+        """_do_jira_backup still rejects fresh headless auth without CLI MFA."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": False})
+        page = MagicMock()
+        page.url = "https://id.atlassian.com/login"
+
+        with self.assertRaises(RuntimeError):
+            inst._do_jira_backup(page)
+
+    def test_jira_backup_allows_headless_mode_with_cli_mfa(self):
+        """_do_jira_backup re-authenticates in headless mode when CLI MFA is enabled."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": True})
+        page = MagicMock()
+        page.url = "https://id.atlassian.com/login"
+        inst._do_login_flow = MagicMock(side_effect=RuntimeError("sentinel"))
+
+        with self.assertRaisesRegex(RuntimeError, "sentinel"):
+            inst._do_jira_backup(page)
+
+        inst._do_login_flow.assert_called_once_with(page)
+
+    def test_confluence_backup_raises_in_headless_mode_without_cli_mfa(self):
+        """_do_confluence_backup still rejects fresh headless auth without CLI MFA."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": False})
+        page = MagicMock()
+        page.url = "https://id.atlassian.com/login"
+
+        with self.assertRaises(RuntimeError):
+            inst._do_confluence_backup(page)
+
+    def test_confluence_backup_allows_headless_mode_with_cli_mfa(self):
+        """_do_confluence_backup re-authenticates in headless mode when CLI MFA is enabled."""
+        inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": True})
+        page = MagicMock()
+        page.url = "https://id.atlassian.com/login"
+        inst._do_login_flow = MagicMock(side_effect=RuntimeError("sentinel"))
+
+        with self.assertRaisesRegex(RuntimeError, "sentinel"):
+            inst._do_confluence_backup(page)
+
+        inst._do_login_flow.assert_called_once_with(page)
 
 if __name__ == "__main__":
     unittest.main()
