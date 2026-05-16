@@ -124,14 +124,31 @@ USE_PLAYWRIGHT: true
 PLAYWRIGHT_HEADLESS: true          # false lets you watch the browser / complete MFA manually
 PLAYWRIGHT_MFA_TIMEOUT: 120        # seconds to wait for manual MFA when headless=false
 PLAYWRIGHT_LOGIN_TIMEOUT: 300      # seconds to wait for each login page navigation step (default 5 min)
+PLAYWRIGHT_CLI_MFA: true           # prompt for email, password, and a fresh MFA code in the terminal before browser login
+PLAYWRIGHT_DEBUG_LOG_INPUTS: false # WARNING: prints email/password/MFA code to stdout before login
+PLAYWRIGHT_DEBUG_BROWSER_CONSOLE: false # mirror browser console/page errors to stdout
 ```
+
+When `PLAYWRIGHT_CLI_MFA: true`, the script asks for your Atlassian login email, browser
+password, and a fresh MFA code in the terminal before it submits the Playwright login flow.
+This works with both `PLAYWRIGHT_HEADLESS: true` and `PLAYWRIGHT_HEADLESS: false`, which makes
+it useful for debugging with a visible browser window. `API_TOKEN` remains available for the
+REST-based backup endpoints and fallbacks.
+
+Known Atlassian login/MFA quirks observed while implementing this flow are documented in
+[`MFA_quircs.md`](MFA_quircs.md).
+
+For temporary debugging, `PLAYWRIGHT_DEBUG_LOG_INPUTS: true` prints the entered browser login
+email, password, and MFA code just before navigating to Atlassian login, and
+`PLAYWRIGHT_DEBUG_BROWSER_CONSOLE: true` mirrors browser console messages and page errors into
+the script output.
 
 **Limitations:**
 
 | Limitation | Notes |
 |---|---|
 | Third-party SSO (Okta, Azure AD, etc.) | Not supported — use REST API mode or configure an Atlassian API-token bypass |
-| MFA / two-step verification | Use `PLAYWRIGHT_HEADLESS: false` and complete MFA in the browser window |
+| MFA / two-step verification | Use `PLAYWRIGHT_HEADLESS: false` for browser-based MFA, or `PLAYWRIGHT_CLI_MFA: true` to enter email/password/MFA in the terminal before login in either headless or visible-browser mode |
 | Headless Linux / CI | Run `playwright install --with-deps chromium` to install OS-level dependencies |
 | Atlassian UI changes | Selectors use ARIA roles/labels for stability, but may need updates if Atlassian redesigns admin pages |
 
