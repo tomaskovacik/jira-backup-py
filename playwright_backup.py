@@ -530,6 +530,26 @@ class PlaywrightAtlassian(Atlassian):
                 print("-> Skipping new backup creation and using existing backup.")
                 return full_existing_href
 
+        # ---- Dismiss any Atlassian spotlight/onboarding overlay ----
+        # Atlassian sometimes shows a tour/spotlight dialog whose footer div
+        # sits on top of the backup button and intercepts pointer events.
+        # Try pressing Escape or clicking any "OK"/"Got it"/"Close" button to
+        # clear the overlay before we attempt the backup click.
+        try:
+            spotlight = page.locator('[data-testid="spotlight--dialog-footer"]')
+            if spotlight.is_visible(timeout=2_000):
+                # Try dismiss buttons in the footer first
+                for label in ("OK", "Got it", "Close", "Dismiss", "Next", "Done"):
+                    btn = spotlight.locator(f'button:has-text("{label}")')
+                    if btn.count() > 0:
+                        btn.first.click(timeout=3_000)
+                        break
+                else:
+                    page.keyboard.press("Escape")
+                page.wait_for_timeout(500)
+        except Exception:
+            pass
+
         # ---- Click "Create backup for cloud" (id="submit") ----
         try:
             page.locator('#submit').click(timeout=15_000)
