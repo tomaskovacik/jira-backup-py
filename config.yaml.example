@@ -27,6 +27,10 @@ USE_PLAYWRIGHT: false
 PLAYWRIGHT_HEADLESS: true
 PLAYWRIGHT_MFA_TIMEOUT: 120
 PLAYWRIGHT_COOKIES_FILE: "playwright_cookies.json"
+PLAYWRIGHT_CLI_MFA: false  # prompt for email, password, and fresh MFA code in the terminal before browser login (works with headless true/false)
+PLAYWRIGHT_REMEMBER_ME: false
+PLAYWRIGHT_DEBUG_LOG_INPUTS: false  # WARNING: prints email/password/MFA code to stdout before login
+PLAYWRIGHT_DEBUG_BROWSER_CONSOLE: false  # mirror browser console/page errors to stdout
 UPLOAD_TO_S3:
     AWS_ENDPOINT_URL: "amazon S3 endpoints https://docs.aws.amazon.com/general/latest/gr/s3.html"
     AWS_REGION: "amazon S3 region"
