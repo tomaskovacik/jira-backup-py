@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Create a dedicated non-root user
 RUN groupadd --gid 1000 appuser && \
