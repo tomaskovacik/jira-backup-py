@@ -2,5 +2,5 @@ boto3==1.43.41
 google-cloud-storage==2.18.0
 azure-storage-blob==12.30.0
 PyYAML==6.0.2
-Requests==2.32.3
+Requests==2.34.2
 playwright>=1.49.1
