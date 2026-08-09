@@ -1,4 +1,4 @@
-boto3==1.43.60
+boto3==1.43.66
 google-cloud-storage==3.13.1
 azure-storage-blob==12.30.0
 PyYAML==6.0.3
