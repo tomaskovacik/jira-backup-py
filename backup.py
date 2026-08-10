@@ -307,6 +307,7 @@ class Atlassian:
     def download_file(self, url, local_filename, max_retries=5):
         print('-> Downloading file from URL: {}'.format(url))
         file_path = os.path.join(_data_dir(), 'backups', local_filename)
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
         # check if alredy downloaded partially
         downloaded_bytes = os.path.getsize(file_path) if os.path.exists(file_path) else 0
