@@ -165,14 +165,14 @@ This will guide you through setting up basic Jira credentials, S3 configuration,
 
 ### Pre-built image
 
-Release images are published automatically to the GitHub Container Registry on every `v*` tag:
+Release images are published automatically to the GitHub Container Registry on every `v*` git tag. The published image tag drops the `v` prefix (e.g. git tag `v1.0.0` publishes image tag `1.0.0`):
 
 ```bash
 # Pull the latest release
 docker pull ghcr.io/tomaskovacik/jira-backup-py:latest
 
 # Pull a specific version
-docker pull ghcr.io/tomaskovacik/jira-backup-py:v1.0.0
+docker pull ghcr.io/tomaskovacik/jira-backup-py:1.0.0
 ```
 
 ### Build the image locally
@@ -243,7 +243,7 @@ docker compose --profile confluence up
 To pin a specific release instead of `latest`, edit the `image:` field in `docker-compose.yml`:
 
 ```yaml
-image: ghcr.io/tomaskovacik/jira-backup-py:v1.0.0
+image: ghcr.io/tomaskovacik/jira-backup-py:1.0.0
 ```
 
 ## 🚀 Usage
