@@ -65,7 +65,7 @@ except ImportError as exc:  # pragma: no cover
 _CONFLUENCE_BACKUP_INITIAL_WAIT: int = 30
 
 # Maximum seconds to wait for a new Confluence backup download link to appear.
-_CONFLUENCE_BACKUP_LINK_TIMEOUT: int = 600  # 10 minutes
+_CONFLUENCE_BACKUP_LINK_TIMEOUT: int = 1200  # 20 minutes
 
 # Seconds between polling attempts when waiting for a new backup link.
 _CONFLUENCE_BACKUP_POLL_INTERVAL: int = 5
@@ -75,6 +75,20 @@ _CONFLUENCE_BACKUP_POLL_INTERVAL: int = 5
 # shorter than the full login timeout to avoid long hangs on elements that
 # simply don't exist on the current page.
 _QUICK_VISIBILITY_TIMEOUT_MS: int = 3_000
+
+# Login form selectors, reused between the candidate lists in _do_login_flow
+# and the standalone visibility check in _is_password_step_visible.
+_SELECTOR_SUBMIT_BUTTON: str = "button[type='submit']"
+_SELECTOR_PASSWORD_DATA_TESTID: str = "input[data-testid='password']"
+_SELECTOR_PASSWORD_AUTOCOMPLETE: str = "input[autocomplete='current-password']"
+_SELECTOR_PASSWORD_ID: str = "input#password"
+_SELECTOR_PASSWORD_NAME: str = "input[name='password']"
+_SELECTOR_PASSWORD_TYPE: str = "input[type='password']"
+
+# Rate-limit recovery log messages, shared by the Jira and Confluence backup
+# flows (each has both a pre-click and a post-click recovery attempt).
+_MSG_USING_EXISTING_BACKUP: str = "-> Using existing backup instead of creating a new one."
+_MSG_NO_EXISTING_BACKUP_VIA_API: str = "-> No existing backup found via REST API either; re-raising rate limit error."
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -213,7 +227,6 @@ class PlaywrightAtlassian(Atlassian):
     def _do_login_flow(self, page) -> None:
         """Perform the actual login sequence: email → password → MFA."""
         self._prepare_cli_login_attempt()
-        host = self.config["HOST_URL"]
         login_url = "https://id.atlassian.com/login"
         self._log_debug_inputs()
         print(f"-> Navigating to login page: {login_url}")
@@ -247,7 +260,7 @@ class PlaywrightAtlassian(Atlassian):
                 candidates=(
                     ("button:Continue", page.get_by_role("button", name="Continue")),
                     ("button:Next", page.get_by_role("button", name="Next")),
-                    ("button[type='submit']", page.locator("button[type='submit']")),
+                    (_SELECTOR_SUBMIT_BUTTON, page.locator(_SELECTOR_SUBMIT_BUTTON)),
                 ),
             )
             page.wait_for_load_state("domcontentloaded", timeout=login_timeout_ms)
@@ -262,14 +275,14 @@ class PlaywrightAtlassian(Atlassian):
                 field_name="password",
                 value=self._get_login_password(),
                 candidates=(
-                    ("input[data-testid='password']", page.locator("input[data-testid='password']")),
-                    ("input[autocomplete='current-password']", page.locator("input[autocomplete='current-password']")),
+                    (_SELECTOR_PASSWORD_DATA_TESTID, page.locator(_SELECTOR_PASSWORD_DATA_TESTID)),
+                    (_SELECTOR_PASSWORD_AUTOCOMPLETE, page.locator(_SELECTOR_PASSWORD_AUTOCOMPLETE)),
                     ("input[placeholder='Enter password']", page.locator("input[placeholder='Enter password']")),
                     ("input[id^='password-']", page.locator("input[id^='password-']")),
                     ("label:Password", page.get_by_label("Password", exact=False)),
-                    ("input#password", page.locator("input#password")),
-                    ("input[name='password']", page.locator("input[name='password']")),
-                    ("input[type='password']", page.locator("input[type='password']")),
+                    (_SELECTOR_PASSWORD_ID, page.locator(_SELECTOR_PASSWORD_ID)),
+                    (_SELECTOR_PASSWORD_NAME, page.locator(_SELECTOR_PASSWORD_NAME)),
+                    (_SELECTOR_PASSWORD_TYPE, page.locator(_SELECTOR_PASSWORD_TYPE)),
                 ),
             )
 
@@ -493,7 +506,7 @@ class PlaywrightAtlassian(Atlassian):
             candidates=(
                 ("button:Log in", page.get_by_role("button", name="Log in")),
                 ("button:Sign in", page.get_by_role("button", name="Sign in")),
-                ("button[type='submit']", page.locator("button[type='submit']")),
+                (_SELECTOR_SUBMIT_BUTTON, page.locator(_SELECTOR_SUBMIT_BUTTON)),
             ),
         )
         self._wait_for_login_transition(page, login_timeout_ms, stage="login submit")
@@ -539,11 +552,11 @@ class PlaywrightAtlassian(Atlassian):
     def _is_password_step_visible(self, page) -> bool:
         """Return True when the password form still appears to be on screen."""
         for selector in (
-            "input[data-testid='password']",
-            "input[autocomplete='current-password']",
-            "input#password",
-            "input[name='password']",
-            "input[type='password']",
+            _SELECTOR_PASSWORD_DATA_TESTID,
+            _SELECTOR_PASSWORD_AUTOCOMPLETE,
+            _SELECTOR_PASSWORD_ID,
+            _SELECTOR_PASSWORD_NAME,
+            _SELECTOR_PASSWORD_TYPE,
         ):
             try:
                 if page.locator(selector).first.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS):
@@ -687,60 +700,9 @@ class PlaywrightAtlassian(Atlassian):
 
         login_timeout_ms = self._login_timeout * 1_000
 
-        # Try a sequence of selectors that cover Atlassian's MFA input variants
-        mfa_input_selectors = [
-            'input#two-step-verification-otp-code-input',
-            'input[name="otpCode"]',
-            'input[id^="two-step-verification-"]',
-            'input[autocomplete="one-time-code"]',
-            'input[name="code"]',
-            'input[name="pin"]',
-            'input[placeholder*="code" i]',
-            'input[placeholder*="digit" i]',
-            'input[type="tel"]',
-            'input[type="number"]',
-            'input[type="text"][maxlength]',
-        ]
-        mfa_field = None
-        for selector in mfa_input_selectors:
-            try:
-                candidate = page.locator(selector).first
-                if candidate.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS):
-                    mfa_field = candidate
-                    break
-            except Exception:
-                continue
-
-        if mfa_field is None:
-            raise RuntimeError(
-                "Could not locate the MFA code input field on the page.\n"
-                f"Current URL: {page.url}\n"
-                "Please report this as a bug or switch to headed mode "
-                "(PLAYWRIGHT_HEADLESS: false) and complete MFA manually."
-            )
-
+        mfa_field = self._find_mfa_input_field(page)
         mfa_field.fill(mfa_code)
-
-        # Submit: try known button labels then fall back to the first submit button
-        submitted = False
-        for button_name in ("Verify", "Continue", "Submit", "Log in", "Sign in"):
-            try:
-                btn = page.get_by_role("button", name=button_name)
-                if btn.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS):
-                    btn.click()
-                    submitted = True
-                    break
-            except Exception:
-                continue
-        if not submitted:
-            try:
-                page.locator('button[type="submit"], input[type="submit"]').first.click()
-                submitted = True
-            except Exception:
-                pass
-        if not submitted:
-            # Last resort: press Enter in the input field
-            mfa_field.press("Enter")
+        self._submit_mfa_form(page, mfa_field)
 
         print("-> MFA code submitted, waiting for redirect…")
         try:
@@ -759,6 +721,56 @@ class PlaywrightAtlassian(Atlassian):
 
         print("-> MFA completed via CLI input.")
 
+    def _find_mfa_input_field(self, page):
+        """Locate the first visible MFA/OTP code input, covering Atlassian's known variants."""
+        mfa_input_selectors = [
+            'input#two-step-verification-otp-code-input',
+            'input[name="otpCode"]',
+            'input[id^="two-step-verification-"]',
+            'input[autocomplete="one-time-code"]',
+            'input[name="code"]',
+            'input[name="pin"]',
+            'input[placeholder*="code" i]',
+            'input[placeholder*="digit" i]',
+            'input[type="tel"]',
+            'input[type="number"]',
+            'input[type="text"][maxlength]',
+        ]
+        for selector in mfa_input_selectors:
+            try:
+                candidate = page.locator(selector).first
+                if candidate.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS):
+                    return candidate
+            except Exception:
+                continue
+
+        raise RuntimeError(
+            "Could not locate the MFA code input field on the page.\n"
+            f"Current URL: {page.url}\n"
+            "Please report this as a bug or switch to headed mode "
+            "(PLAYWRIGHT_HEADLESS: false) and complete MFA manually."
+        )
+
+    def _submit_mfa_form(self, page, mfa_field) -> None:
+        """Submit the MFA form via a known button label, a generic submit button, or Enter."""
+        for button_name in ("Verify", "Continue", "Submit", "Log in", "Sign in"):
+            try:
+                btn = page.get_by_role("button", name=button_name)
+                if btn.is_visible(timeout=_QUICK_VISIBILITY_TIMEOUT_MS):
+                    btn.click()
+                    return
+            except Exception:
+                continue
+
+        try:
+            page.locator('button[type="submit"], input[type="submit"]').first.click()
+            return
+        except Exception:
+            pass
+
+        # Last resort: press Enter in the input field
+        mfa_field.press("Enter")
+
     def _is_auth_redirect(self, url: str) -> bool:
         """Return True when *url* indicates an authentication redirect."""
         url_lower = url.lower()
@@ -776,18 +788,79 @@ class PlaywrightAtlassian(Atlassian):
             "browser window."
         )
 
-    def _do_jira_backup(self, page) -> str:
-        """Navigate to the Jira Cloud Export admin page, trigger backup, return URL."""
-        host = self.config["HOST_URL"]
-        backup_page = f"https://{host}/secure/admin/CloudExport.jspa"
-        print(f"-> Navigating to Jira Cloud Export page: {backup_page}")
+    def _recover_existing_backup_on_rate_limit(self, existing_href, host, get_existing_backup_fn, backup_label):
+        """Try to reuse an already-existing backup after a rate-limit error.
+
+        Returns the download URL to reuse, or ``None`` if the caller should
+        re-raise the original :class:`RuntimeError`.
+        """
+        if existing_href:
+            full_href = existing_href if existing_href.startswith("http") else f"https://{host}{existing_href}"
+            if not self.is_already_downloaded(full_href):
+                print(f"-> Found existing {backup_label} backup not yet downloaded locally: {full_href}")
+                print(_MSG_USING_EXISTING_BACKUP)
+                return full_href
+            print(f"-> Existing backup {full_href} was already downloaded previously, skipping.")
+
+        api_url = get_existing_backup_fn()
+        if api_url:
+            print(f"-> Found existing {backup_label} backup via REST API: {api_url}")
+            print(_MSG_USING_EXISTING_BACKUP)
+            return api_url
+
+        print(_MSG_NO_EXISTING_BACKUP_VIA_API)
+        return None
+
+    def _check_rate_limit_with_recovery(
+        self, page, existing_href, host, get_existing_backup_fn, backup_label, wait_ms: int = 3_000
+    ):
+        """Check for a rate-limit banner and try to recover an existing backup if one is hit.
+
+        Returns the recovered download URL if the caller should return it, or
+        ``None`` if there was no rate limit and the caller should proceed
+        normally. Re-raises the original :class:`RuntimeError` when rate-limited
+        with no recoverable backup.
+        """
+        try:
+            self._check_backup_rate_limit(page, wait_ms=wait_ms)
+        except RuntimeError:
+            recovered = self._recover_existing_backup_on_rate_limit(
+                existing_href, host, get_existing_backup_fn, backup_label
+            )
+            if recovered:
+                return recovered
+            raise
+        return None
+
+    @staticmethod
+    def _resolve_backup_href(href: str, host: str) -> str:
+        """Turn a possibly-relative backup link into an absolute URL."""
+        return href if href.startswith("http") else f"https://{host}{href}"
+
+    def _check_existing_unfetched_backup(self, existing_href: str, host: str, backup_label: str):
+        """Return the URL of an existing, not-yet-downloaded backup when CHECK_EXISTING_BACKUP applies.
+
+        Covers the case where someone manually created a backup via the web UI
+        before this run started. Returns ``None`` when a new backup should be
+        triggered instead.
+        """
+        if not (self.config.get("CHECK_EXISTING_BACKUP", False) and existing_href):
+            return None
+        full_href = self._resolve_backup_href(existing_href, host)
+        if self.is_already_downloaded(full_href):
+            return None
+        print(f"-> Found existing {backup_label} backup not yet downloaded locally: {full_href}")
+        print("-> Skipping new backup creation and using existing backup.")
+        return full_href
+
+    def _navigate_to_backup_page(self, page, backup_page: str, page_label: str) -> None:
+        """Navigate to the given admin page, re-authenticating first if the session expired."""
+        print(f"-> Navigating to {page_label} page: {backup_page}")
         try:
             page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
         except PlaywrightTimeoutError:
             print("-> Warning: backup page timed out waiting for load; continuing")
 
-        # If we were redirected to a login page (e.g. saved cookies expired),
-        # perform a fresh login and navigate to the backup page again.
         if self._is_auth_redirect(page.url):
             if self._headless and not self._cli_mfa:
                 self._raise_headless_login_required()
@@ -795,13 +868,40 @@ class PlaywrightAtlassian(Atlassian):
             self._do_login_flow(page)
             page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
 
-        # ---- Wait for the page JS to finish rendering ----
-        # The Jira export page renders the previous backup download link via
-        # JavaScript *after* the initial HTML load event fires.  Give it 10 s to
-        # appear before we try to read it, otherwise we may capture an empty link
-        # and lose the fallback URL we need when the site is rate-limited.
+    def _sync_include_attachments(self, page, checkbox) -> None:
+        """Tick/untick the attachments checkbox to match the INCLUDE_ATTACHMENTS config."""
+        include = str(self.config.get("INCLUDE_ATTACHMENTS", "false")).lower() == "true"
+        try:
+            if checkbox.is_visible() and include != checkbox.is_checked():
+                checkbox.click()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _wait_for_backup_page_render() -> None:
+        """Give the backup admin page's JS time to render the existing-backup download link."""
         print("-> Waiting 10 s for page to render existing backup link…")
         time.sleep(10)
+
+    @staticmethod
+    def _click_create_backup_button(page, primary_selector: str) -> None:
+        """Click the 'Create backup for cloud' button, falling back to matching by value attribute."""
+        try:
+            page.locator(primary_selector).click(timeout=15_000)
+        except Exception:
+            page.locator('input[value="Create backup for cloud"]').click()
+
+    def _do_jira_backup(self, page) -> str:
+        """Navigate to the Jira Cloud Export admin page, trigger backup, return URL."""
+        host = self.config["HOST_URL"]
+        backup_page = f"https://{host}/secure/admin/CloudExport.jspa"
+        self._navigate_to_backup_page(page, backup_page, "Jira Cloud Export")
+
+        # The Jira export page renders the previous backup download link via
+        # JavaScript *after* the initial HTML load event fires.  Give it time to
+        # appear before we try to read it, otherwise we may capture an empty link
+        # and lose the fallback URL we need when the site is rate-limited.
+        self._wait_for_backup_page_render()
 
         # ---- Pre-click: read any existing backup link already on the page ----
         # We always capture this before touching the button so we can fall back to
@@ -819,82 +919,28 @@ class PlaywrightAtlassian(Atlassian):
         # ---- Pre-click: check for a rate-limit message already on the page ----
         # Atlassian shows the rate-limit banner as soon as the export page loads
         # when a recent backup already exists; we must handle it before clicking.
-        try:
-            self._check_backup_rate_limit(page, wait_ms=0)
-        except RuntimeError:
-            # Page is already rate-limited – use the existing link if available.
-            if pre_click_href:
-                full_href = pre_click_href if pre_click_href.startswith("http") else f"https://{host}{pre_click_href}"
-                if not self.is_already_downloaded(full_href):
-                    print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
-                    print("-> Using existing backup instead of creating a new one.")
-                    return full_href
-                else:
-                    print(f"-> Existing backup {full_href} was already downloaded previously, skipping.")
-            # The Jira export page does not always render a visible download link
-            # when rate-limited.  Fall back to the REST API to locate the last backup.
-            api_url = self.get_existing_jira_backup()
-            if api_url:
-                print(f"-> Found existing Jira backup via REST API: {api_url}")
-                print("-> Using existing backup instead of creating a new one.")
-                return api_url
-            else:
-                print("-> No existing backup found via REST API either; re-raising rate limit error.")
-            raise
+        recovered = self._check_rate_limit_with_recovery(
+            page, pre_click_href, host, self.get_existing_jira_backup, "Jira", wait_ms=0
+        )
+        if recovered:
+            return recovered
 
         # ---- Check for an existing backup we haven't downloaded yet ----
-        # If CHECK_EXISTING_BACKUP is enabled and there is already a download link
-        # on the page pointing to a backup UUID we don't have locally, return that
-        # URL instead of triggering a new backup (covers the case where someone
-        # manually created a backup via the web UI).
-        if self.config.get("CHECK_EXISTING_BACKUP", False) and pre_click_href:
-            full_href = pre_click_href if pre_click_href.startswith("http") else f"https://{host}{pre_click_href}"
-            if not self.is_already_downloaded(full_href):
-                print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
-                print("-> Skipping new backup creation and using existing backup.")
-                return full_href
+        shortcut = self._check_existing_unfetched_backup(pre_click_href, host, "Jira")
+        if shortcut:
+            return shortcut
 
         # ---- Attachments checkbox ----
-        include = str(self.config.get("INCLUDE_ATTACHMENTS", "false")).lower() == "true"
-        try:
-            checkbox = page.get_by_label("Include attachments", exact=False)
-            if checkbox.is_visible():
-                if include != checkbox.is_checked():
-                    checkbox.click()
-        except PlaywrightTimeoutError:
-            pass
+        self._sync_include_attachments(page, page.get_by_label("Include attachments", exact=False))
 
-        # ---- Click the export / backup button ----
-        for button_name in ("Backup", "Start backup", "Export", "Submit"):
-            try:
-                btn = page.get_by_role("button", name=button_name)
-                btn.click()
-                break
-            except Exception:
-                continue
-        else:
-            # Fallback: first submit button on the page
-            page.locator('input[type="submit"], button[type="submit"]').first.click()
+        # ---- Click "Create backup for cloud" (id="submit-cloud-new") ----
+        self._click_create_backup_button(page, '#submit-cloud-new')
 
-        try:
-            self._check_backup_rate_limit(page)
-        except RuntimeError:
-            if pre_click_href:
-                full_href = pre_click_href if pre_click_href.startswith("http") else f"https://{host}{pre_click_href}"
-                if not self.is_already_downloaded(full_href):
-                    print(f"-> Found existing Jira backup not yet downloaded locally: {full_href}")
-                    print("-> Using existing backup instead of creating a new one.")
-                    return full_href
-                else:
-                    print(f"-> Existing backup {full_href} was already downloaded previously, skipping.")
-            api_url = self.get_existing_jira_backup()
-            if api_url:
-                print(f"-> Found existing Jira backup via REST API: {api_url}")
-                print("-> Using existing backup instead of creating a new one.")
-                return api_url
-            else:
-                print("-> No existing backup found via REST API either; re-raising rate limit error.")
-            raise
+        recovered = self._check_rate_limit_with_recovery(
+            page, pre_click_href, host, self.get_existing_jira_backup, "Jira"
+        )
+        if recovered:
+            return recovered
 
         print("-> Backup process started, waiting for download link…")
 
@@ -903,58 +949,34 @@ class PlaywrightAtlassian(Atlassian):
         # /plugins/servlet/* links (e.g. /plugins/servlet/webhooks) that appear on
         # the same page before the real backup download link is ready.
         download_link = page.locator('a[href*="/plugins/servlet/export/"]').first
-        download_link.wait_for(state="visible", timeout=600_000)  # 10 min
-        href = download_link.get_attribute("href")
-        if not href.startswith("http"):
-            href = f"https://{host}{href}"
+        download_link.wait_for(state="visible", timeout=1_200_000)  # 20 min
+        full_href = self._resolve_backup_href(download_link.get_attribute("href"), host)
         # Sanity-check: the href must look like an actual download, not an admin page.
-        if not (href.endswith(".zip") or "fileId" in href or "export/download" in href):
+        if not (full_href.endswith(".zip") or "fileId" in full_href or "export/download" in full_href):
             raise RuntimeError(
-                f"Unexpected backup URL detected (possible page-layout mismatch): {href}\n"
+                f"Unexpected backup URL detected (possible page-layout mismatch): {full_href}\n"
                 "The selector matched a non-backup link. Please report this issue."
             )
-        print(f"-> Backup ready: {href}")
-        return href
+        print(f"-> Backup ready: {full_href}")
+        return full_href
 
     def _do_confluence_backup(self, page) -> str:
         """Navigate to the Confluence Cloud backup admin page, trigger backup, return URL."""
         host = self.config["HOST_URL"]
         backup_page = f"https://{host}/wiki/plugins/servlet/ondemandbackupmanager/admin"
-        print(f"-> Navigating to Confluence backup page: {backup_page}")
-        try:
-            page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
-        except PlaywrightTimeoutError:
-            print("-> Warning: backup page timed out waiting for load; continuing")
-
-        # If we were redirected to a login page (e.g. saved cookies expired),
-        # perform a fresh login and navigate to the backup page again.
-        if self._is_auth_redirect(page.url):
-            if self._headless and not self._cli_mfa:
-                self._raise_headless_login_required()
-            print("-> Session expired or not authenticated – logging in fresh")
-            self._do_login_flow(page)
-            page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
+        self._navigate_to_backup_page(page, backup_page, "Confluence backup")
 
         # ---- Attachments checkbox ----
         # Confluence Cloud uses "cbAttachments2" as the checkbox name on the
         # ondemandbackupmanager page (there are two attachment checkboxes; the
         # relevant one for cloud backups has name="cbAttachments2").
-        include = str(self.config.get("INCLUDE_ATTACHMENTS", "false")).lower() == "true"
-        try:
-            checkbox = page.locator('input[name="cbAttachments2"]')
-            if checkbox.is_visible():
-                if include != checkbox.is_checked():
-                    checkbox.click()
-        except Exception:
-            pass
+        self._sync_include_attachments(page, page.locator('input[name="cbAttachments2"]'))
 
-        # ---- Wait for the page JS to finish rendering ----
         # The Confluence backup page renders the previous backup download link via
-        # JavaScript *after* the initial HTML load event fires.  Give it 10 s to
+        # JavaScript *after* the initial HTML load event fires.  Give it time to
         # appear before we try to read it, otherwise we may capture an empty link
         # and lose the fallback URL we need when the site is rate-limited.
-        print("-> Waiting 10 s for page to render existing backup link…")
-        time.sleep(10)
+        self._wait_for_backup_page_render()
 
         # ---- Capture the existing backup link URL (if any) before clicking ----
         # The page may already show a link from a previous backup run.  We need
@@ -971,39 +993,16 @@ class PlaywrightAtlassian(Atlassian):
         # ---- Pre-click: check for a rate-limit message already on the page ----
         # Atlassian shows the rate-limit banner on page load when a recent backup
         # exists; handle it here so we don't needlessly click the button.
-        try:
-            self._check_backup_rate_limit(page, wait_ms=0)
-        except RuntimeError:
-            if existing_href:
-                full_existing_href = existing_href if existing_href.startswith("http") else f"https://{host}{existing_href}"
-                if not self.is_already_downloaded(full_existing_href):
-                    print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
-                    print("-> Using existing backup instead of creating a new one.")
-                    return full_existing_href
-                else:
-                    print(f"-> Existing backup {full_existing_href} was already downloaded previously, skipping.")
-            # The Confluence backup page may not render a visible download link when
-            # rate-limited.  Fall back to the REST API to locate the last backup.
-            api_url = self.get_existing_confluence_backup()
-            if api_url:
-                print(f"-> Found existing Confluence backup via REST API: {api_url}")
-                print("-> Using existing backup instead of creating a new one.")
-                return api_url
-            else:
-                print("-> No existing backup found via REST API either; re-raising rate limit error.")
-            raise
+        recovered = self._check_rate_limit_with_recovery(
+            page, existing_href, host, self.get_existing_confluence_backup, "Confluence", wait_ms=0
+        )
+        if recovered:
+            return recovered
 
         # ---- Check for an existing backup we haven't downloaded yet ----
-        # If CHECK_EXISTING_BACKUP is enabled and the page already shows a download
-        # link pointing to a backup UUID we don't have locally, return that URL
-        # instead of triggering a new backup (covers the case where someone manually
-        # created a backup via the web UI).
-        if self.config.get("CHECK_EXISTING_BACKUP", False) and existing_href:
-            full_existing_href = existing_href if existing_href.startswith("http") else f"https://{host}{existing_href}"
-            if not self.is_already_downloaded(full_existing_href):
-                print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
-                print("-> Skipping new backup creation and using existing backup.")
-                return full_existing_href
+        shortcut = self._check_existing_unfetched_backup(existing_href, host, "Confluence")
+        if shortcut:
+            return shortcut
 
         # ---- Dismiss any Atlassian spotlight/onboarding overlay ----
         # Atlassian sometimes shows a tour/spotlight dialog whose footer div
@@ -1026,31 +1025,13 @@ class PlaywrightAtlassian(Atlassian):
             pass
 
         # ---- Click "Create backup for cloud" (id="submit") ----
-        try:
-            page.locator('#submit').click(timeout=15_000)
-        except Exception:
-            # Fallback: match by value attribute
-            page.locator('input[value="Create backup for cloud"]').click()
+        self._click_create_backup_button(page, '#submit')
 
-        try:
-            self._check_backup_rate_limit(page)
-        except RuntimeError:
-            if existing_href:
-                full_existing_href = existing_href if existing_href.startswith("http") else f"https://{host}{existing_href}"
-                if not self.is_already_downloaded(full_existing_href):
-                    print(f"-> Found existing Confluence backup not yet downloaded locally: {full_existing_href}")
-                    print("-> Using existing backup instead of creating a new one.")
-                    return full_existing_href
-                else:
-                    print(f"-> Existing backup {full_existing_href} was already downloaded previously, skipping.")
-            api_url = self.get_existing_confluence_backup()
-            if api_url:
-                print(f"-> Found existing Confluence backup via REST API: {api_url}")
-                print("-> Using existing backup instead of creating a new one.")
-                return api_url
-            else:
-                print("-> No existing backup found via REST API either; re-raising rate limit error.")
-            raise
+        recovered = self._check_rate_limit_with_recovery(
+            page, existing_href, host, self.get_existing_confluence_backup, "Confluence"
+        )
+        if recovered:
+            return recovered
 
         print("-> Backup process started, waiting for download link…")
 
@@ -1099,8 +1080,7 @@ class PlaywrightAtlassian(Atlassian):
                     f"{_CONFLUENCE_BACKUP_LINK_TIMEOUT} seconds."
                 )
 
-        if not href.startswith("http"):
-            href = f"https://{host}{href}"
+        href = self._resolve_backup_href(href, host)
         print(f"-> Backup ready: {href}")
         return href
 

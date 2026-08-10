@@ -22,6 +22,10 @@ import urllib3
 def read_config(path=''):
     if path == '':
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.yaml')
+    path = os.path.realpath(path)
+    if not path.endswith(('.yaml', '.yml')):
+        print(f'-> Refusing to read config file without a .yaml/.yml extension: {path}')
+        sys.exit(1)
     try:
         with open(path, 'r') as config_file:
             return yaml.full_load(config_file)
@@ -82,7 +86,7 @@ class Atlassian:
         backup = self.session.post(self.start_confluence_backup, data=json.dumps(self.payload))
 
         if backup.status_code not in (200, 406):
-            raise Exception(backup, backup.text)
+            raise RuntimeError(backup, backup.text)
 
         print('-> Backup process successfully started')
         confluence_backup_status = 'https://{}/wiki/rest/obm/1.0/getprogress'.format(self.config['HOST_URL'])
@@ -162,13 +166,13 @@ class Atlassian:
                 print('-> Downloading existing backup: taskId={}'.format(task_id))
                 task_id = backup.text
             else:
-                raise Exception(backup, backup.text)
+                raise RuntimeError(backup, backup.text)
 
         elif backup.status_code == 200:
             task_id = json.loads(backup.text)['taskId']
             print('-> Backup process successfully started: taskId={}'.format(task_id))
         else:
-            raise Exception(backup, backup.text)
+            raise RuntimeError(backup, backup.text)
 
         jira_backup_status = 'https://{jira_host}/rest/backup/1/export/getProgress?taskId={task_id}'.format(
             jira_host=self.config['HOST_URL'], task_id=task_id)
@@ -255,47 +259,53 @@ class Atlassian:
 
         return None
 
+    @staticmethod
+    def _resolve_total_size(response, downloaded_bytes):
+        """Determine the total expected file size from response headers, if known."""
+        if 'content-range' in response.headers:
+            return int(response.headers['content-range'].split('/')[-1])
+        if 'content-length' in response.headers:
+            return int(response.headers['content-length']) + downloaded_bytes
+        return 0
+
+    @staticmethod
+    def _print_download_progress(downloaded_bytes, total_size):
+        if total_size <= 0:
+            return
+        percent = (downloaded_bytes / total_size) * 100
+        downloaded_gb = downloaded_bytes / (1024**3)
+        total_gb = total_size / (1024**3)
+        print(f'\r-> Progress: {percent:.1f}% ({downloaded_gb:.2f} GB / {total_gb:.2f} GB)', end='', flush=True)
+
+    def _download_attempt(self, url, file_path, downloaded_bytes):
+        """Perform a single (possibly resumed) download attempt, returning bytes written."""
+        headers = {'Range': f'bytes={downloaded_bytes}-'} if downloaded_bytes > 0 else {}
+        r = self.session.get(url, stream=True, headers=headers, timeout=60)
+        total_size = self._resolve_total_size(r, downloaded_bytes)
+        mode = 'ab' if downloaded_bytes > 0 else 'wb'
+
+        with open(file_path, mode) as file_:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
+                if not chunk:
+                    continue
+                file_.write(chunk)
+                downloaded_bytes += len(chunk)
+                self._print_download_progress(downloaded_bytes, total_size)
+
+        return downloaded_bytes
+
     def download_file(self, url, local_filename, max_retries=5):
         print('-> Downloading file from URL: {}'.format(url))
         file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', local_filename)
 
         # check if alredy downloaded partially
-        downloaded_bytes = 0
-        if os.path.exists(file_path):
-            downloaded_bytes = os.path.getsize(file_path)
+        downloaded_bytes = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+        if downloaded_bytes > 0:
             print('-> Resuming download from byte {}'.format(downloaded_bytes))
 
         for attempt in range(max_retries):
             try:
-                headers = {}
-                if downloaded_bytes > 0:
-                    headers['Range'] = f'bytes={downloaded_bytes}-'
-
-                r = self.session.get(url, stream=True, headers=headers, timeout=60)
-
-                # get complete size
-                if 'content-range' in r.headers:
-                    total_size = int(r.headers['content-range'].split('/')[-1])
-                elif 'content-length' in r.headers:
-                    total_size = int(r.headers['content-length']) + downloaded_bytes
-                else:
-                    total_size = 0
-
-                mode = 'ab' if downloaded_bytes > 0 else 'wb'
-
-                with open(file_path, mode) as file_:
-                    for chunk in r.iter_content(chunk_size=1024 * 1024):  # 1MB chunks
-                        if chunk:
-                            file_.write(chunk)
-                            downloaded_bytes += len(chunk)
-
-                            # show progress
-                            if total_size > 0:
-                                percent = (downloaded_bytes / total_size) * 100
-                                downloaded_gb = downloaded_bytes / (1024**3)
-                                total_gb = total_size / (1024**3)
-                                print(f'\r-> Progress: {percent:.1f}% ({downloaded_gb:.2f} GB / {total_gb:.2f} GB)', end='', flush=True)
-
+                downloaded_bytes = self._download_attempt(url, file_path, downloaded_bytes)
                 print('\n-> Download completed: {}'.format(file_path))
                 return file_path
 
@@ -308,7 +318,7 @@ class Atlassian:
                 if os.path.exists(file_path):
                     downloaded_bytes = os.path.getsize(file_path)
 
-        raise Exception(f'Download failed after {max_retries} retries')
+        raise RuntimeError(f'Download failed after {max_retries} retries')
 
     def unzip_backup(self, local_filename, backup_type='jira'):
         """
@@ -326,7 +336,7 @@ class Atlassian:
 
         # Safety check: ensure extract_dir is within backups_dir
         if os.path.commonpath([extract_dir, backups_dir]) != backups_dir:
-            raise Exception('Extract directory is outside the backups directory: {}'.format(extract_dir))
+            raise ValueError('Extract directory is outside the backups directory: {}'.format(extract_dir))
 
         if os.path.exists(extract_dir):
             print('-> Clearing destination directory: {}'.format(extract_dir))
@@ -339,7 +349,7 @@ class Atlassian:
                 for member in zf.infolist():
                     member_path = os.path.realpath(os.path.join(extract_dir, member.filename))
                     if os.path.commonpath([member_path, extract_dir]) != extract_dir:
-                        raise Exception('Zip slip attempt detected in member: {}'.format(member.filename))
+                        raise ValueError('Zip slip attempt detected in member: {}'.format(member.filename))
                     zf.extract(member, extract_dir)
         except Exception as e:
             print('-> Extraction failed: {}. Zip file retained: {}'.format(e, zip_path))
@@ -538,6 +548,15 @@ def handle_completed_backup(atlas, config, backup_url, backup_type):
 
 
 def setup_scheduled_task(frequency_days=4, time_hour=10, time_minute=0, service_type='jira'):
+    if service_type not in ('jira', 'confluence'):
+        raise ValueError(f'Unsupported service_type: {service_type!r}')
+    if not isinstance(frequency_days, int) or isinstance(frequency_days, bool) or frequency_days < 1:
+        raise ValueError(f'frequency_days must be a positive integer, got: {frequency_days!r}')
+    if not isinstance(time_hour, int) or isinstance(time_hour, bool) or not (0 <= time_hour <= 23):
+        raise ValueError(f'time_hour must be an integer between 0 and 23, got: {time_hour!r}')
+    if not isinstance(time_minute, int) or isinstance(time_minute, bool) or not (0 <= time_minute <= 59):
+        raise ValueError(f'time_minute must be an integer between 0 and 59, got: {time_minute!r}')
+
     script_path = os.path.abspath(__file__)
     script_dir = os.path.dirname(script_path)
     
@@ -546,41 +565,46 @@ def setup_scheduled_task(frequency_days=4, time_hour=10, time_minute=0, service_
     if system in ['linux', 'darwin']:
         return setup_cron_task(script_path, script_dir, frequency_days, time_hour, time_minute, service_type)
     elif system == 'windows':
-        return setup_windows_task(script_path, script_dir, frequency_days, time_hour, time_minute, service_type)
+        return setup_windows_task(script_path, frequency_days, time_hour, time_minute, service_type)
     else:
-        raise Exception(f"Unsupported operating system: {system}")
+        raise NotImplementedError(f"Unsupported operating system: {system}")
+
+
+def _strip_existing_cron_entry(lines, service_type, service_flag):
+    """Remove any existing jira-backup-py cron entry (comment + command) for this service type."""
+    updated_lines = []
+    skip_next = False
+
+    for i, line in enumerate(lines):
+        if skip_next:
+            skip_next = False
+            continue
+
+        is_marker = 'jira-backup-py automated backup' in line and f'({service_type})' in line
+        if is_marker and i + 1 < len(lines) and service_flag in lines[i + 1]:
+            skip_next = True  # Skip both the comment and the command
+            print(f"-> Updating existing {service_type} backup schedule...")
+            continue
+
+        updated_lines.append(line)
+
+    return updated_lines
 
 
 def setup_cron_task(script_path, script_dir, frequency_days, time_hour, time_minute, service_type):
     python_path = sys.executable
     service_flag = '-j' if service_type == 'jira' else '-c'
-    
+
     cron_command = f"{time_minute} {time_hour} */{frequency_days} * * cd {script_dir} && {python_path} {script_path} {service_flag}"
-    
+
     try:
         result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
         existing_cron = result.stdout if result.returncode == 0 else ""
-        
+
         # Remove only the cron entry for the same service type
         lines = existing_cron.strip().split('\n') if existing_cron.strip() else []
-        updated_lines = []
-        skip_next = False
-        
-        for i, line in enumerate(lines):
-            if skip_next:
-                skip_next = False
-                continue
-            
-            # Check if this is a comment line for jira-backup-py
-            if 'jira-backup-py automated backup' in line and f'({service_type})' in line:
-                # Check if the next line contains the cron command for this service
-                if i + 1 < len(lines) and service_flag in lines[i + 1]:
-                    skip_next = True  # Skip both the comment and the command
-                    print(f"-> Updating existing {service_type} backup schedule...")
-                    continue
-            
-            updated_lines.append(line)
-        
+        updated_lines = _strip_existing_cron_entry(lines, service_type, service_flag)
+
         existing_cron = '\n'.join(updated_lines) + '\n' if updated_lines else ""
         new_cron = existing_cron + f"# jira-backup-py automated backup ({service_type})\n{cron_command}\n"
         
@@ -599,7 +623,7 @@ def setup_cron_task(script_path, script_dir, frequency_days, time_hour, time_min
         return False
 
 
-def setup_windows_task(script_path, script_dir, frequency_days, time_hour, time_minute, service_type):
+def setup_windows_task(script_path, frequency_days, time_hour, time_minute, service_type):
     python_path = sys.executable
     service_flag = '-j' if service_type == 'jira' else '-c'
     task_name = f"jira-backup-py-{service_type}"
@@ -627,6 +651,11 @@ def setup_windows_task(script_path, script_dir, frequency_days, time_hour, time_
         return False
 
 if __name__ == '__main__':
+    # Separator so individual runs are easy to spot when this script's output
+    # is appended to a shared log file (e.g. via cron).
+    print('=' * 70)
+    print()
+
     parser = argparse.ArgumentParser()
     parser.add_argument('-C', type=str, dest='config_file', default='', help='path to config file')
     parser.add_argument('-w', action='store_true', dest='wizard', help='activate config wizard')
@@ -662,7 +691,7 @@ if __name__ == '__main__':
             print("-> Scheduled task setup completed")
             exit(0)
         except ValueError as e:
-            print(f"-> Error: Invalid time format. Use HH:MM format (e.g., 10:30)")
+            print(f"-> Error: Invalid time format ({e}). Use HH:MM format (e.g., 10:30)")
             exit(1)
         except Exception as e:
             print(f"-> Error setting up scheduled task: {e}")
@@ -698,3 +727,4 @@ if __name__ == '__main__':
 
     print('-> Backup URL: {}'.format(backup_url))
     handle_completed_backup(atlass, config, backup_url, backup_type)
+    print()

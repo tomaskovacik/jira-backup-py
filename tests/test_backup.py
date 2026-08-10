@@ -121,15 +121,15 @@ class RunPostBackupCommandTests(unittest.TestCase):
 
 class ReadConfigTests(unittest.TestCase):
     def test_missing_config_exits_gracefully(self):
-        with self.assertRaises(SystemExit) as cm:
-            with redirect_stdout(io.StringIO()) as stdout:
+        with redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
                 backup.read_config('/tmp/nonexistent_config_12345.yaml')
         self.assertEqual(cm.exception.code, 1)
 
     def test_missing_config_prints_helpful_message(self):
         out = io.StringIO()
-        with self.assertRaises(SystemExit):
-            with redirect_stdout(out):
+        with redirect_stdout(out):
+            with self.assertRaises(SystemExit):
                 backup.read_config('/tmp/nonexistent_config_12345.yaml')
         output = out.getvalue()
         self.assertIn('/tmp/nonexistent_config_12345.yaml', output)
