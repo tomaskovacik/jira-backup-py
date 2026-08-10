@@ -672,7 +672,9 @@ if __name__ == '__main__':
     
     if args.wizard:
         wizard.create_config()
-    
+        print("-> Configuration wizard completed")
+        exit(0)
+
     if args.schedule:
         try:
             time_parts = args.schedule_time.split(':')

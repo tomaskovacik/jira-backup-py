@@ -215,12 +215,21 @@ docker run --rm \
 
 A `docker-compose.yml` is included for quick, one-command backups.
 
-**Prerequisites** — before running, copy the example config and fill in your credentials:
+**Prerequisites** — before running, create `config.yaml` either by hand or with the containerized wizard:
 
 ```bash
 cp config.yaml.example config.yaml
 # Edit config.yaml with your HOST_URL, USER_EMAIL, API_TOKEN, etc.
 ```
+
+Or, run the interactive wizard through Compose instead of installing Python locally:
+
+```bash
+touch config.yaml   # must pre-exist, or Docker bind-mounts a directory here instead
+docker compose --profile wizard run --rm wizard
+```
+
+The `wizard` service mounts `config.yaml` read-write (unlike the backup services below) and runs with a TTY so the prompts work interactively. `-w` exits as soon as the wizard finishes, without triggering a backup.
 
 Then run the desired backup:
 

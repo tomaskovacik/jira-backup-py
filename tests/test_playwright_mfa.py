@@ -1,5 +1,6 @@
 """Tests for the CLI MFA and Remember-me features in PlaywrightAtlassian."""
 
+import itertools
 import unittest
 from unittest.mock import MagicMock, call, patch
 
@@ -137,7 +138,10 @@ class HandleMfaTests(unittest.TestCase):
         page = MagicMock()
         type(page).url = property(lambda self, _iter=iter(urls): next(_iter, urls[-1]))
 
-        with patch("time.sleep"), patch("time.time", side_effect=[0, 1, 5]):
+        # _handle_mfa now polls twice (once in _wait_for_mfa_prompt to detect the
+        # MFA page, once in the headed-mode loop to detect it clearing), so use an
+        # open-ended counter rather than a fixed-length side_effect list.
+        with patch("time.sleep"), patch("time.time", side_effect=itertools.count(0, 1)):
             inst._handle_mfa(page)
 
     def test_headed_mode_raises_on_timeout(self):
@@ -145,8 +149,8 @@ class HandleMfaTests(unittest.TestCase):
         inst = self._make({"PLAYWRIGHT_HEADLESS": False, "PLAYWRIGHT_MFA_TIMEOUT": 5})
         page = self._page(url="https://id.atlassian.com/verify")
 
-        # time.time() always returns a value past the deadline
-        with patch("time.sleep"), patch("time.time", side_effect=[0, 100]):
+        # time.time() keeps advancing past both the poll and the headed-mode deadline
+        with patch("time.sleep"), patch("time.time", side_effect=itertools.count(0, 1)):
             with self.assertRaises(TimeoutError):
                 inst._handle_mfa(page)
 
@@ -344,19 +348,20 @@ class AuthRedirectGuardTests(unittest.TestCase):
         instance, _ = _make_instance(extra_config)
         return instance
 
-    def _page_redirected_then_ok(self, backup_url):
-        """Return a page that starts on a login URL then 'loads' the backup page."""
+    def _page_stuck_on_login(self):
+        """Return a page representing a genuinely expired session: every read of
+        page.url still shows the login page, since _do_login_flow is mocked to
+        raise immediately in these tests (it never gets far enough to actually
+        navigate anywhere else, so there is no "settled" URL to simulate here).
+        """
         page = MagicMock()
-        # First call: auth redirect; subsequent calls: backup page
-        urls = iter(["https://id.atlassian.com/login", backup_url])
-        type(page).url = property(lambda self, _it=urls: next(_it, backup_url))
+        page.url = "https://id.atlassian.com/login"
         return page
 
     def test_jira_headless_cli_mfa_calls_login_flow_on_redirect(self):
         """_do_jira_backup must call _do_login_flow (not raise) when headless+cli_mfa."""
         inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": True})
-        backup_page = f"https://example.atlassian.net/secure/admin/CloudExport.jspa"
-        page = self._page_redirected_then_ok(backup_page)
+        page = self._page_stuck_on_login()
 
         # Raise a sentinel so we stop immediately after _do_login_flow is called
         class _LoginCalled(Exception):
@@ -382,8 +387,7 @@ class AuthRedirectGuardTests(unittest.TestCase):
     def test_confluence_headless_cli_mfa_calls_login_flow_on_redirect(self):
         """_do_confluence_backup must call _do_login_flow (not raise) when headless+cli_mfa."""
         inst = self._make({"PLAYWRIGHT_HEADLESS": True, "PLAYWRIGHT_CLI_MFA": True})
-        backup_page = "https://example.atlassian.net/wiki/plugins/servlet/ondemandbackupmanager/admin"
-        page = self._page_redirected_then_ok(backup_page)
+        page = self._page_stuck_on_login()
 
         class _LoginCalled(Exception):
             pass

@@ -1,4 +1,15 @@
 services:
+  wizard:
+    image: ghcr.io/tomaskovacik/jira-backup-py:latest
+    profiles:
+      - wizard
+    volumes:
+      - ./config.yaml:/backup/config.yaml
+    command: ["-w"]
+    stdin_open: true
+    tty: true
+    restart: "no"
+
   jira-backup:
     image: ghcr.io/tomaskovacik/jira-backup-py:latest
     profiles:

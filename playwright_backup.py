@@ -38,6 +38,7 @@ The class reads three extra keys from *config*:
 """
 
 import json
+import re
 import time
 import os
 import getpass
@@ -113,6 +114,16 @@ def _is_sso_page(url: str) -> bool:
     return any(indicator in url_lower for indicator in _SSO_INDICATORS)
 
 
+_MFA_URL_INDICATORS = ["verify", "mfa", "two-step", "two-factor", "verification"]
+_MFA_URL_PATTERN = re.compile("|".join(re.escape(i) for i in _MFA_URL_INDICATORS), re.IGNORECASE)
+
+
+def _is_mfa_page(url: str) -> bool:
+    """Return True when the current URL looks like an MFA / two-step verification page."""
+    url_lower = url.lower()
+    return any(indicator in url_lower for indicator in _MFA_URL_INDICATORS)
+
+
 # ---------------------------------------------------------------------------
 # PlaywrightAtlassian
 # ---------------------------------------------------------------------------
@@ -154,6 +165,7 @@ class PlaywrightAtlassian(Atlassian):
 
     def create_jira_backup(self) -> str:
         """Trigger a Jira backup via the web UI and return the download URL."""
+        self._maybe_prepare_cli_login_attempt_early()
         with sync_playwright() as pw:
             browser, page = self._launch(pw)
             try:
@@ -165,6 +177,7 @@ class PlaywrightAtlassian(Atlassian):
 
     def create_confluence_backup(self) -> str:
         """Trigger a Confluence backup via the web UI and return the download URL."""
+        self._maybe_prepare_cli_login_attempt_early()
         with sync_playwright() as pw:
             browser, page = self._launch(pw)
             try:
@@ -336,9 +349,30 @@ class PlaywrightAtlassian(Atlassian):
         finally:
             self._clear_cli_login_attempt()
 
+    def _maybe_prepare_cli_login_attempt_early(self) -> None:
+        """Collect CLI-MFA credentials before Chrome launches, when possible.
+
+        Only safe to do when a fresh login is already known to be required
+        (no saved session cookies), since Chrome doesn't need to be open at
+        all yet in that case; otherwise the browser sits idle while the user
+        answers the terminal prompts, and gets navigated fresh afterward
+        anyway. When cookies do exist, whether a fresh login is needed can
+        only be discovered once the browser tries to use them, so this is a
+        no-op and _prepare_cli_login_attempt runs at its usual point instead.
+        """
+        if not self._cli_mfa:
+            return
+        if self._cookies_file and os.path.exists(self._cookies_file):
+            return
+        self._prepare_cli_login_attempt()
+
     def _prepare_cli_login_attempt(self) -> None:
         """Collect terminal credentials up front for a CLI-assisted login attempt."""
         if not self._cli_mfa:
+            return
+        if self._cli_login_email and self._cli_login_password and self._cli_mfa_code:
+            # Already collected earlier in this run (e.g. before Chrome was
+            # launched); avoid prompting the user twice for one login attempt.
             return
 
         configured_email = str(self.config.get("USER_EMAIL", "")).strip()
@@ -633,6 +667,33 @@ class PlaywrightAtlassian(Atlassian):
                 f"your Atlassian account to allow API-token authentication."
             )
 
+    def _wait_for_mfa_prompt(self, page, timeout_ms: int = 15_000) -> bool:
+        """Wait for the URL to redirect to an MFA / two-step verification step.
+
+        Atlassian's login is a single-page app, and page.url read from Python
+        proved unreliable at reflecting its client-side navigation promptly:
+        a manual poll loop (checking page.url in a plain Python while loop)
+        would sometimes miss the MFA step entirely even seconds after it was
+        visibly showing in the browser, leading to a confusing "still on an
+        authentication page" error. page.wait_for_url subscribes to the
+        browser's own navigation events instead of re-reading a Python-side
+        property, so it isn't subject to the same lag.
+
+        Returns True once an MFA indicator appears in the URL, or False if
+        the target host is reached first (login succeeded without MFA) or
+        the timeout elapses without ever seeing one.
+        """
+        host = self.config["HOST_URL"].lower()
+
+        def _mfa_or_host_reached(url: str) -> bool:
+            return _is_mfa_page(url) or host in url.lower()
+
+        try:
+            page.wait_for_url(_mfa_or_host_reached, timeout=timeout_ms)
+        except PlaywrightTimeoutError:
+            pass
+        return _is_mfa_page(page.url)
+
     def _handle_mfa(self, page) -> None:
         """Detect an MFA prompt and handle it based on the configured mode.
 
@@ -644,8 +705,7 @@ class PlaywrightAtlassian(Atlassian):
            in the browser window within ``PLAYWRIGHT_MFA_TIMEOUT`` seconds.
         3. **Headless without CLI MFA** – raise an error.
         """
-        mfa_indicators = ["verify", "mfa", "two-step", "two-factor", "verification"]
-        if not any(indicator in page.url.lower() for indicator in mfa_indicators):
+        if not self._wait_for_mfa_prompt(page):
             return
 
         if self._cli_mfa:
@@ -662,7 +722,7 @@ class PlaywrightAtlassian(Atlassian):
             host = self.config["HOST_URL"]
             login_timeout_ms = self._login_timeout * 1_000
             while time.time() < deadline:
-                if host in page.url and not any(i in page.url.lower() for i in mfa_indicators):
+                if host in page.url and not _is_mfa_page(page.url):
                     print("-> MFA completed, continuing.")
                     try:
                         page.wait_for_load_state("networkidle", timeout=login_timeout_ms)
@@ -710,8 +770,7 @@ class PlaywrightAtlassian(Atlassian):
         except PlaywrightTimeoutError:
             print("-> Warning: page did not reach networkidle after MFA submit; continuing")
 
-        mfa_indicators = ["verify", "mfa", "two-step", "two-factor", "verification"]
-        if any(ind in page.url.lower() for ind in mfa_indicators):
+        if _is_mfa_page(page.url):
             raise RuntimeError(
                 f"MFA submission did not redirect away from the verification page.\n"
                 f"Current URL: {page.url}\n"
@@ -861,12 +920,32 @@ class PlaywrightAtlassian(Atlassian):
         except PlaywrightTimeoutError:
             print("-> Warning: backup page timed out waiting for load; continuing")
 
-        if self._is_auth_redirect(page.url):
+        if self._is_auth_redirect(page.url) and self._still_auth_redirect_after_settling(page):
             if self._headless and not self._cli_mfa:
                 self._raise_headless_login_required()
             print("-> Session expired or not authenticated – logging in fresh")
             self._do_login_flow(page)
             page.goto(backup_page, wait_until="load", timeout=self._login_timeout * 1_000)
+
+    def _still_auth_redirect_after_settling(self, page, timeout_ms: int = 5_000) -> bool:
+        """Give a same-session validation redirect chain a moment to complete.
+
+        A fresh cross-domain navigation to the target Jira/Confluence host can
+        transiently bounce through id.atlassian.com while Atlassian silently
+        re-validates an already-valid session, even though the user is still
+        fully authenticated. page.goto(..., wait_until="load") can return
+        right on that intermediate hop, so checking page.url immediately
+        afterward can catch it and wrongly conclude the session expired,
+        triggering a needless (and, since the browser is actually still
+        logged in, broken) re-login. Wait briefly for the URL to leave
+        auth-redirect territory before deciding a fresh login is genuinely
+        required.
+        """
+        try:
+            page.wait_for_url(lambda url: not self._is_auth_redirect(url), timeout=timeout_ms)
+        except PlaywrightTimeoutError:
+            pass
+        return self._is_auth_redirect(page.url)
 
     def _sync_include_attachments(self, page, checkbox) -> None:
         """Tick/untick the attachments checkbox to match the INCLUDE_ATTACHMENTS config."""
