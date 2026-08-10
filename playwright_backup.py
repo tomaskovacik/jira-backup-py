@@ -44,7 +44,7 @@ import os
 import getpass
 import requests
 
-from backup import Atlassian
+from backup import Atlassian, _data_dir
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
@@ -143,9 +143,7 @@ class PlaywrightAtlassian(Atlassian):
         # _cookies will be populated after login and reused for HTTP downloads
         self._cookies: list = []
         # Path for persisted session cookies; empty string disables persistence
-        _default_cookies_file = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "playwright_cookies.json"
-        )
+        _default_cookies_file = os.path.join(_data_dir(), "playwright_cookies.json")
         self._cookies_file: str = config.get("PLAYWRIGHT_COOKIES_FILE", _default_cookies_file)
         # CLI MFA: prompt for TOTP code at the terminal when running headless
         self._cli_mfa: bool = bool(config.get("PLAYWRIGHT_CLI_MFA", False))
@@ -947,7 +945,7 @@ class PlaywrightAtlassian(Atlassian):
             pass
         return self._is_auth_redirect(page.url)
 
-    def _sync_include_attachments(self, page, checkbox) -> None:
+    def _sync_include_attachments(self, checkbox) -> None:
         """Tick/untick the attachments checkbox to match the INCLUDE_ATTACHMENTS config."""
         include = str(self.config.get("INCLUDE_ATTACHMENTS", "false")).lower() == "true"
         try:
@@ -1010,7 +1008,7 @@ class PlaywrightAtlassian(Atlassian):
             return shortcut
 
         # ---- Attachments checkbox ----
-        self._sync_include_attachments(page, page.get_by_label("Include attachments", exact=False))
+        self._sync_include_attachments(page.get_by_label("Include attachments", exact=False))
 
         # ---- Click "Create backup for cloud" (id="submit-cloud-new") ----
         self._click_create_backup_button(page, '#submit-cloud-new')
@@ -1039,6 +1037,85 @@ class PlaywrightAtlassian(Atlassian):
         print(f"-> Backup ready: {full_href}")
         return full_href
 
+    @staticmethod
+    def _capture_confluence_existing_href(page) -> str:
+        """Return the currently-shown backup download link, if any, before clicking.
+
+        The page may already show a link from a previous backup run; the
+        caller needs this to detect when a *new* link later replaces it, and
+        as a rate-limit recovery fallback.
+        """
+        try:
+            existing_locator = page.locator('a[href*="/wiki/download/temp/"]').first
+            existing_href = existing_locator.get_attribute("href") or ""
+            print(f"-> Existing backup link found on page: {existing_href}")
+            return existing_href
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _dismiss_spotlight_overlay(page) -> None:
+        """Dismiss any Atlassian spotlight/onboarding overlay covering the backup button.
+
+        Atlassian sometimes shows a tour/spotlight dialog whose footer div
+        sits on top of the backup button and intercepts pointer events. Try
+        clicking any "OK"/"Got it"/"Close" button in the footer first,
+        falling back to pressing Escape.
+        """
+        try:
+            spotlight = page.locator('[data-testid="spotlight--dialog-footer"]')
+            if not spotlight.is_visible(timeout=2_000):
+                return
+            for label in ("OK", "Got it", "Close", "Dismiss", "Next", "Done"):
+                btn = spotlight.locator(f'button:has-text("{label}")')
+                if btn.count() > 0:
+                    btn.first.click(timeout=3_000)
+                    break
+            else:
+                page.keyboard.press("Escape")
+            page.wait_for_timeout(500)
+        except Exception:
+            pass
+
+    def _wait_for_confluence_download_link(self, page, existing_href: str) -> str:
+        """Poll until a *new* Confluence backup download link appears.
+
+        Retries for up to _CONFLUENCE_BACKUP_LINK_TIMEOUT seconds, checking
+        every _CONFLUENCE_BACKUP_POLL_INTERVAL seconds. Some Confluence
+        instances render the finished link as <a>Site_Backup.zip</a> with no
+        href attribute, so 'span#backupLocation a' is matched (without
+        [href]) and the REST API is used as a fallback both when the link is
+        visible but carries no href, and once more after the poll times out.
+        """
+        deadline = time.time() + _CONFLUENCE_BACKUP_LINK_TIMEOUT
+        while time.time() < deadline:
+            try:
+                link_locator = page.locator('span#backupLocation a').first
+                if link_locator.is_visible(timeout=5_000):
+                    candidate = link_locator.get_attribute("href") or ""
+                    if candidate and candidate != existing_href:
+                        return candidate
+                    # Link is visible but has no href – backup may be ready;
+                    # try the REST API which returns the filename once complete.
+                    api_url = self.get_existing_confluence_backup()
+                    if api_url:
+                        print(f"-> Backup link visible but has no href; obtained URL via REST API: {api_url}")
+                        return api_url
+            except Exception:
+                pass
+            time.sleep(_CONFLUENCE_BACKUP_POLL_INTERVAL)
+
+        # One final REST API attempt before giving up entirely.
+        api_url = self.get_existing_confluence_backup()
+        if api_url:
+            print(f"-> Backup link not found on page; obtained URL via REST API: {api_url}")
+            return api_url
+
+        raise TimeoutError(
+            f"Confluence backup did not produce a new download link within "
+            f"{_CONFLUENCE_BACKUP_LINK_TIMEOUT} seconds."
+        )
+
     def _do_confluence_backup(self, page) -> str:
         """Navigate to the Confluence Cloud backup admin page, trigger backup, return URL."""
         host = self.config["HOST_URL"]
@@ -1049,7 +1126,7 @@ class PlaywrightAtlassian(Atlassian):
         # Confluence Cloud uses "cbAttachments2" as the checkbox name on the
         # ondemandbackupmanager page (there are two attachment checkboxes; the
         # relevant one for cloud backups has name="cbAttachments2").
-        self._sync_include_attachments(page, page.locator('input[name="cbAttachments2"]'))
+        self._sync_include_attachments(page.locator('input[name="cbAttachments2"]'))
 
         # The Confluence backup page renders the previous backup download link via
         # JavaScript *after* the initial HTML load event fires.  Give it time to
@@ -1057,17 +1134,7 @@ class PlaywrightAtlassian(Atlassian):
         # and lose the fallback URL we need when the site is rate-limited.
         self._wait_for_backup_page_render()
 
-        # ---- Capture the existing backup link URL (if any) before clicking ----
-        # The page may already show a link from a previous backup run.  We need
-        # to wait for a *new* link that differs from the pre-click URL so that
-        # we don't accidentally return the stale previous-backup URL.
-        existing_href: str = ""
-        try:
-            existing_locator = page.locator('a[href*="/wiki/download/temp/"]').first
-            existing_href = existing_locator.get_attribute("href") or ""
-            print(f"-> Existing backup link found on page: {existing_href}")
-        except Exception:
-            pass
+        existing_href = self._capture_confluence_existing_href(page)
 
         # ---- Pre-click: check for a rate-limit message already on the page ----
         # Atlassian shows the rate-limit banner on page load when a recent backup
@@ -1083,25 +1150,7 @@ class PlaywrightAtlassian(Atlassian):
         if shortcut:
             return shortcut
 
-        # ---- Dismiss any Atlassian spotlight/onboarding overlay ----
-        # Atlassian sometimes shows a tour/spotlight dialog whose footer div
-        # sits on top of the backup button and intercepts pointer events.
-        # Try pressing Escape or clicking any "OK"/"Got it"/"Close" button to
-        # clear the overlay before we attempt the backup click.
-        try:
-            spotlight = page.locator('[data-testid="spotlight--dialog-footer"]')
-            if spotlight.is_visible(timeout=2_000):
-                # Try dismiss buttons in the footer first
-                for label in ("OK", "Got it", "Close", "Dismiss", "Next", "Done"):
-                    btn = spotlight.locator(f'button:has-text("{label}")')
-                    if btn.count() > 0:
-                        btn.first.click(timeout=3_000)
-                        break
-                else:
-                    page.keyboard.press("Escape")
-                page.wait_for_timeout(500)
-        except Exception:
-            pass
+        self._dismiss_spotlight_overlay(page)
 
         # ---- Click "Create backup for cloud" (id="submit") ----
         self._click_create_backup_button(page, '#submit')
@@ -1119,46 +1168,7 @@ class PlaywrightAtlassian(Atlassian):
         #      overwrite the old link. ----
         time.sleep(_CONFLUENCE_BACKUP_INITIAL_WAIT)
 
-        # ---- Poll until a *new* backup download link appears ----
-        # We retry for up to _CONFLUENCE_BACKUP_LINK_TIMEOUT seconds, checking
-        # every _CONFLUENCE_BACKUP_POLL_INTERVAL seconds.
-        # Note: some Confluence instances render the finished link as
-        # <a>Site_Backup.zip</a> with no href attribute.  We therefore match
-        # 'span#backupLocation a' (without [href]) and fall back to the REST
-        # API when the link is visible but carries no href.
-        deadline = time.time() + _CONFLUENCE_BACKUP_LINK_TIMEOUT
-        href = ""
-        while time.time() < deadline:
-            try:
-                link_locator = page.locator('span#backupLocation a').first
-                if link_locator.is_visible(timeout=5_000):
-                    candidate = link_locator.get_attribute("href") or ""
-                    if candidate and candidate != existing_href:
-                        href = candidate
-                        break
-                    # Link is visible but has no href – backup may be ready;
-                    # try the REST API which returns the filename once complete.
-                    api_url = self.get_existing_confluence_backup()
-                    if api_url:
-                        print(f"-> Backup link visible but has no href; obtained URL via REST API: {api_url}")
-                        href = api_url
-                        break
-            except Exception:
-                pass
-            time.sleep(_CONFLUENCE_BACKUP_POLL_INTERVAL)
-
-        if not href:
-            # One final REST API attempt before giving up entirely.
-            api_url = self.get_existing_confluence_backup()
-            if api_url:
-                print(f"-> Backup link not found on page; obtained URL via REST API: {api_url}")
-                href = api_url
-            else:
-                raise TimeoutError(
-                    f"Confluence backup did not produce a new download link within "
-                    f"{_CONFLUENCE_BACKUP_LINK_TIMEOUT} seconds."
-                )
-
+        href = self._wait_for_confluence_download_link(page, existing_href)
         href = self._resolve_backup_href(href, host)
         print(f"-> Backup ready: {href}")
         return href

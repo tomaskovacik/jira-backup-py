@@ -24,12 +24,14 @@ RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt && \
 # Copy application source
 COPY backup.py wizard.py playwright_backup.py ./
 
-# Create the local backups output directory and hand it over to appuser
-RUN mkdir -p /backup/backups && chown -R appuser:appuser /backup
+# Data directory for config.yaml, playwright_cookies.json, and downloaded
+# backups; mount a single external volume here. Kept separate from the
+# application files above so mounting it never shadows backup.py itself.
+ENV DATA_DIR=/backup/data
+RUN mkdir -p /backup/data/backups && chown -R appuser:appuser /backup
 
 USER appuser
 
-# Mount your config.yaml here and optionally persist downloaded backups
-VOLUME ["/backup/config.yaml", "/backup/backups"]
+VOLUME ["/backup/data"]
 
 ENTRYPOINT ["python", "backup.py"]

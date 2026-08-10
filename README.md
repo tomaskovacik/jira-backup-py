@@ -181,55 +181,54 @@ docker pull ghcr.io/tomaskovacik/jira-backup-py:v1.0.0
 docker build -t jira-backup-py .
 ```
 
-### Run a backup
+### Data directory
 
-Mount your `config.yaml` and (optionally) a local directory to persist downloaded backups:
+The image keeps `config.yaml`, `playwright_cookies.json`, and downloaded backups together under one directory (`/backup/data` in the container, overridable via the `DATA_DIR` env var). Mount a single host directory there — no need to `touch` individual files first, since Docker creates a directory mount automatically:
+
+```bash
+mkdir -p ./data
+```
+
+### Run a backup
 
 ```bash
 # Backup Jira
-docker run --rm \
-  -v /path/to/config.yaml:/backup/config.yaml:ro \
-  -v /path/to/local/backups:/backup/backups \
-  jira-backup-py -j
+docker run --rm -v "$(pwd)/data:/backup/data" jira-backup-py -j
 
 # Backup Confluence
-docker run --rm \
-  -v /path/to/config.yaml:/backup/config.yaml:ro \
-  -v /path/to/local/backups:/backup/backups \
-  jira-backup-py -c
+docker run --rm -v "$(pwd)/data:/backup/data" jira-backup-py -c
 ```
 
-> **Note**: Omit the `-v /path/to/local/backups` mount if you upload backups directly to S3/GCP/Azure and do not need a local copy.
+Downloaded backups land in `./data/backups/`. If you upload directly to S3/GCP/Azure and don't need a local copy, they just won't accumulate there.
 
 ### Playwright mode inside Docker
 
 Chromium and its OS dependencies are pre-installed in the image. Enable Playwright mode via `config.yaml` (`USE_PLAYWRIGHT: true`) or the CLI flag:
 
 ```bash
-docker run --rm \
-  -v /path/to/config.yaml:/backup/config.yaml:ro \
-  jira-backup-py -j --playwright
+docker run --rm -v "$(pwd)/data:/backup/data" jira-backup-py -j --playwright
 ```
+
+Each container is otherwise ephemeral, but since `playwright_cookies.json` lives in the same mounted `data/` directory, the login session (set up via `PLAYWRIGHT_COOKIES_FILE`) persists automatically between runs — no fresh login or MFA on every invocation once you've logged in once.
 
 ### Docker Compose
 
-A `docker-compose.yml` is included for quick, one-command backups.
+A `docker-compose.yml` is included for quick, one-command backups. All three services mount `./data` as the single data directory.
 
 **Prerequisites** — before running, create `config.yaml` either by hand or with the containerized wizard:
 
 ```bash
-cp config.yaml.example config.yaml
-# Edit config.yaml with your HOST_URL, USER_EMAIL, API_TOKEN, etc.
+cp config.yaml.example data/config.yaml
+# Edit data/config.yaml with your HOST_URL, USER_EMAIL, API_TOKEN, etc.
 ```
 
 Or, run the interactive wizard through Compose instead of installing Python locally:
 
 ```bash
-touch config.yaml   # must pre-exist, or Docker bind-mounts a directory here instead
 docker compose --profile wizard run --rm wizard
 ```
 
-The `wizard` service mounts `config.yaml` read-write (unlike the backup services below) and runs with a TTY so the prompts work interactively. `-w` exits as soon as the wizard finishes, without triggering a backup.
+The wizard runs with a TTY so the prompts work interactively, and writes `data/config.yaml`. `-w` exits as soon as the wizard finishes, without triggering a backup.
 
 Then run the desired backup:
 
@@ -241,7 +240,7 @@ docker compose --profile jira up
 docker compose --profile confluence up
 ```
 
-Both services mount `./config.yaml` (read-only) and persist downloaded backups to `./backups/`. To pin a specific release instead of `latest`, edit the `image:` field in `docker-compose.yml`:
+To pin a specific release instead of `latest`, edit the `image:` field in `docker-compose.yml`:
 
 ```yaml
 image: ghcr.io/tomaskovacik/jira-backup-py:v1.0.0

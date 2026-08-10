@@ -4,7 +4,7 @@ services:
     profiles:
       - wizard
     volumes:
-      - ./config.yaml:/backup/config.yaml
+      - ./data:/backup/data
     command: ["-w"]
     stdin_open: true
     tty: true
@@ -15,8 +15,7 @@ services:
     profiles:
       - jira
     volumes:
-      - ./config.yaml:/backup/config.yaml:ro
-      - ./backups:/backup/backups
+      - ./data:/backup/data
     command: ["-j"]
     restart: "no"
 
@@ -25,7 +24,6 @@ services:
     profiles:
       - confluence
     volumes:
-      - ./config.yaml:/backup/config.yaml:ro
-      - ./backups:/backup/backups
+      - ./data:/backup/data
     command: ["-c"]
     restart: "no"

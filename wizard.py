@@ -2,6 +2,16 @@ import os
 import yaml
 
 
+def _data_dir():
+    """Directory for user data: config.yaml, playwright_cookies.json, backups/.
+
+    Overridable via the DATA_DIR env var for containerized deployments where
+    the mounted data volume differs from the script's own location; defaults
+    to the script's directory otherwise (unchanged local, non-Docker usage).
+    """
+    return os.environ.get('DATA_DIR') or os.path.dirname(os.path.abspath(__file__))
+
+
 def _load_existing_config(config_path):
     """Load the existing config.yaml, if any, to use as defaults for the wizard."""
     if not os.path.exists(config_path):
@@ -22,7 +32,7 @@ def _ask(prompt, current='') -> str:
 
 
 def create_config():
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.yaml')
+    config_path = os.path.join(_data_dir(), 'config.yaml')
     existing = _load_existing_config(config_path)
     existing_s3 = existing.get('UPLOAD_TO_S3') or {}
 

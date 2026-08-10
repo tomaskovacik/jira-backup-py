@@ -30,3 +30,4 @@ backups/*
 wizard.pyc
 __pycache__/
 playwright_cookies.json
+data/

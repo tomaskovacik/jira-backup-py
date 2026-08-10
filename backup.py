@@ -19,9 +19,19 @@ import sys
 import urllib3
 
 
+def _data_dir():
+    """Directory for user data: config.yaml, playwright_cookies.json, backups/.
+
+    Overridable via the DATA_DIR env var for containerized deployments where
+    the mounted data volume differs from the script's own location; defaults
+    to the script's directory otherwise (unchanged local, non-Docker usage).
+    """
+    return os.environ.get('DATA_DIR') or os.path.dirname(os.path.abspath(__file__))
+
+
 def read_config(path=''):
     if path == '':
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.yaml')
+        path = os.path.join(_data_dir(), 'config.yaml')
     path = os.path.realpath(path)
     if not path.endswith(('.yaml', '.yml')):
         print(f'-> Refusing to read config file without a .yaml/.yml extension: {path}')
@@ -189,7 +199,7 @@ class Atlassian:
 
     def _registry_path(self):
         """Return the path to the local backup registry JSON file."""
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', '.backup_registry.json')
+        return os.path.join(_data_dir(), 'backups', '.backup_registry.json')
 
     def _load_registry(self):
         """Load the local backup registry, returning an empty dict on error."""
@@ -244,7 +254,7 @@ class Atlassian:
 
         # Match the UUID precisely: surrounded by non-UUID characters or string boundaries
         match_pattern = re.compile(r'(?<![0-9a-fA-F\-])' + re.escape(backup_id) + r'(?![0-9a-fA-F\-])')
-        backups_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups')
+        backups_dir = os.path.join(_data_dir(), 'backups')
         if os.path.isdir(backups_dir):
             for filename in os.listdir(backups_dir):
                 if match_pattern.search(filename):
@@ -296,7 +306,7 @@ class Atlassian:
 
     def download_file(self, url, local_filename, max_retries=5):
         print('-> Downloading file from URL: {}'.format(url))
-        file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', local_filename)
+        file_path = os.path.join(_data_dir(), 'backups', local_filename)
 
         # check if alredy downloaded partially
         downloaded_bytes = os.path.getsize(file_path) if os.path.exists(file_path) else 0
@@ -326,8 +336,8 @@ class Atlassian:
         backups/<backup_type>/ and remove the zip file if extraction completes
         without errors.
         """
-        zip_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups', local_filename)
-        backups_dir = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backups'))
+        zip_path = os.path.join(_data_dir(), 'backups', local_filename)
+        backups_dir = os.path.realpath(os.path.join(_data_dir(), 'backups'))
         extract_dir = os.path.realpath(os.path.join(backups_dir, backup_type))
 
         if not os.path.exists(zip_path):
@@ -538,11 +548,9 @@ def handle_completed_backup(atlas, config, backup_url, backup_type):
 
     if backup_handled:
         if is_enabled(config.get('UNZIP_BACKUP')):
-            resolved_backup_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), 'backups', backup_type)
+            resolved_backup_path = os.path.join(_data_dir(), 'backups', backup_type)
         else:
-            resolved_backup_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), 'backups', file_name)
+            resolved_backup_path = os.path.join(_data_dir(), 'backups', file_name)
 
         run_post_backup_command(config, backup_path=resolved_backup_path, backup_type=backup_type)
 
