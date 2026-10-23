@@ -69,7 +69,7 @@ USER_EMAIL: "your.email@company.com"
 API_TOKEN: "your-api-token"
 INCLUDE_ATTACHMENTS: false
 DOWNLOAD_LOCALLY: true
-UNZIP_BACKUP: false  # set to true to extract into backups/jira or backups/confluence and remove the zip
+UNZIP_BACKUP: false  # set to true to extract into backups/jira or backups/confluence and remove the zip (Confluence .gz / .tar.gz backups are ungzipped the same way)
 
 # AWS S3 Configuration (optional)
 UPLOAD_TO_S3:
@@ -306,7 +306,7 @@ USER_EMAIL: "your.email@company.com"
 API_TOKEN: "your-api-token"
 INCLUDE_ATTACHMENTS: false
 DOWNLOAD_LOCALLY: true
-UNZIP_BACKUP: false  # set to true to extract into backups/jira or backups/confluence and remove the zip
+UNZIP_BACKUP: false  # set to true to extract into backups/jira or backups/confluence and remove the zip (Confluence .gz / .tar.gz backups are ungzipped the same way)
 ```
 
 Simply omit the `UPLOAD_TO_XXX` sections you don't need.

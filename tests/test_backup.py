@@ -292,3 +292,92 @@ class UnzipBackupRegistryTests(unittest.TestCase):
         self.assertEqual(registry[self.UUID]['backup_type'], 'jira')
         # zip should have been removed
         self.assertFalse(os.path.exists(zip_path))
+
+    def _extract(self, local_filename, write_archive, backup_type='confluence'):
+        backups_dir = os.path.join(self.tmp, 'backups')
+        os.makedirs(backups_dir, exist_ok=True)
+        archive_path = os.path.join(backups_dir, local_filename)
+        write_archive(archive_path)
+
+        with patch('backup.os.path.dirname', return_value=self.tmp), \
+             patch('backup.os.path.abspath', side_effect=lambda p: p):
+            self.atlas.unzip_backup(local_filename, backup_type)
+
+        self.assertFalse(os.path.exists(archive_path))
+        self.assertIn(self.UUID, self.atlas._load_registry())
+        return os.path.join(backups_dir, backup_type)
+
+    def test_gunzips_gzipped_zip(self):
+        import gzip
+        import zipfile
+
+        def write(path):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, 'w') as zf:
+                zf.writestr('entities.xml', '<backup/>')
+            with gzip.open(path, 'wb') as f:
+                f.write(buf.getvalue())
+
+        extract_dir = self._extract('confluence_01052026_1030_{}.gz'.format(self.UUID), write)
+        self.assertEqual(os.listdir(extract_dir), ['entities.xml'])
+
+    def test_extracts_tar_gz(self):
+        import tarfile
+
+        def write(path):
+            data = b'<backup/>'
+            with tarfile.open(path, 'w:gz') as tf:
+                info = tarfile.TarInfo('entities.xml')
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+        extract_dir = self._extract('confluence_01052026_1030_{}.tar.gz'.format(self.UUID), write)
+        self.assertEqual(os.listdir(extract_dir), ['entities.xml'])
+
+    def test_gunzips_plain_gzipped_file(self):
+        import gzip
+
+        def write(path):
+            with gzip.open(path, 'wb') as f:
+                f.write(b'<backup/>')
+
+        extract_dir = self._extract('confluence_01052026_1030_{}.xml.gz'.format(self.UUID), write)
+        with open(os.path.join(extract_dir, 'confluence_01052026_1030_{}.xml'.format(self.UUID)), 'rb') as f:
+            self.assertEqual(f.read(), b'<backup/>')
+
+    def test_rejects_tar_path_traversal(self):
+        import tarfile
+
+        backups_dir = os.path.join(self.tmp, 'backups')
+        os.makedirs(backups_dir, exist_ok=True)
+        local_filename = 'confluence_{}.tar.gz'.format(self.UUID)
+        archive_path = os.path.join(backups_dir, local_filename)
+        with tarfile.open(archive_path, 'w:gz') as tf:
+            info = tarfile.TarInfo('../evil.txt')
+            info.size = 0
+            tf.addfile(info, io.BytesIO(b''))
+
+        with patch('backup.os.path.dirname', return_value=self.tmp), \
+             patch('backup.os.path.abspath', side_effect=lambda p: p), \
+             redirect_stdout(io.StringIO()):
+            with self.assertRaises(ValueError):
+                self.atlas.unzip_backup(local_filename, 'confluence')
+        self.assertTrue(os.path.exists(archive_path))
+
+
+class GenerateFilenameExtensionTests(unittest.TestCase):
+    UUID = '12345678-1234-1234-1234-123456789abc'
+
+    def setUp(self):
+        self.atlas = backup.Atlassian({
+            'USER_EMAIL': 'u@example.com', 'API_TOKEN': 't',
+            'HOST_URL': 'x.atlassian.net', 'INCLUDE_ATTACHMENTS': 'true',
+        })
+
+    def test_keeps_gz_extension_from_url(self):
+        name = self.atlas.generate_filename('https://x/wiki/download/temp/{}.gz'.format(self.UUID), 'confluence')
+        self.assertTrue(name.endswith('_{}.gz'.format(self.UUID)))
+
+    def test_defaults_to_zip(self):
+        name = self.atlas.generate_filename('https://x/plugins/servlet/export/download/?fileId={}'.format(self.UUID))
+        self.assertTrue(name.endswith('_{}.zip'.format(self.UUID)))

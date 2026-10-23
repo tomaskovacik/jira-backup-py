@@ -6,6 +6,8 @@ import re
 import shutil
 import argparse
 import zipfile
+import gzip
+import tarfile
 import requests
 import boto3
 from urllib.parse import urlparse, parse_qs
@@ -69,6 +71,12 @@ class Atlassian:
         - {type} - Backup type (jira or confluence)
         """
         uuid = backup_url.split('/')[-1].replace('?fileId=', '')
+        extension = '.zip'
+        for ext in ('.tar.gz', '.tgz', '.gz', '.zip'):
+            if uuid.lower().endswith(ext):
+                uuid = uuid[:-len(ext)]
+                extension = ext
+                break
         timestamp = time.strftime('%d%m%Y_%H%M')
 
         custom_pattern = self.config.get('CUSTOM_FILENAME', {})
@@ -86,11 +94,11 @@ class Atlassian:
                 uuid=uuid,
                 type=backup_type
             )
-            if not filename.endswith('.zip'):
-                filename += '.zip'
+            if not filename.endswith(extension):
+                filename += extension
             return filename
         else:
-            return '{type}_{timestamp}_{uuid}.zip'.format(type=backup_type, timestamp=timestamp, uuid=uuid)
+            return '{type}_{timestamp}_{uuid}{ext}'.format(type=backup_type, timestamp=timestamp, uuid=uuid, ext=extension)
 
     def create_confluence_backup(self):
         backup = self.session.post(self.start_confluence_backup, data=json.dumps(self.payload))
@@ -331,18 +339,60 @@ class Atlassian:
 
         raise RuntimeError(f'Download failed after {max_retries} retries')
 
+    @staticmethod
+    def _is_gzip(path):
+        with open(path, 'rb') as f:
+            return f.read(2) == b'\x1f\x8b'
+
+    @staticmethod
+    def _check_member_path(extract_dir, name):
+        member_path = os.path.realpath(os.path.join(extract_dir, name))
+        if os.path.commonpath([member_path, extract_dir]) != extract_dir:
+            raise ValueError('Path traversal attempt detected in member: {}'.format(name))
+
+    def _extract_zip(self, zip_path, extract_dir):
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            for member in zf.infolist():
+                self._check_member_path(extract_dir, member.filename)
+                zf.extract(member, extract_dir)
+
+    def _extract_gzip(self, gz_path, local_filename, extract_dir):
+        """
+        Extract a gzip backup. A gzipped tarball is unpacked into extract_dir;
+        a plain gzipped file is decompressed into extract_dir and, if the
+        result is a zip archive, that zip is extracted too.
+        """
+        if tarfile.is_tarfile(gz_path):
+            with tarfile.open(gz_path, 'r:gz') as tf:
+                for member in tf.getmembers():
+                    self._check_member_path(extract_dir, member.name)
+                    if not (member.isfile() or member.isdir()):
+                        raise ValueError('Unsupported tar member type: {}'.format(member.name))
+                    tf.extract(member, extract_dir, filter='data')
+            return
+
+        name = os.path.basename(local_filename)
+        name = name[:-3] if name.lower().endswith('.gz') else name + '.out'
+        out_path = os.path.join(extract_dir, name)
+        with gzip.open(gz_path, 'rb') as src, open(out_path, 'wb') as dst:
+            shutil.copyfileobj(src, dst, 1024 * 1024)
+
+        if zipfile.is_zipfile(out_path):
+            self._extract_zip(out_path, extract_dir)
+            os.remove(out_path)
+
     def unzip_backup(self, local_filename, backup_type='jira'):
         """
-        Clear the destination directory, extract a downloaded backup zip into
-        backups/<backup_type>/ and remove the zip file if extraction completes
-        without errors.
+        Clear the destination directory, extract a downloaded backup archive
+        (zip, gzip or tar.gz) into backups/<backup_type>/ and remove the
+        archive file if extraction completes without errors.
         """
         zip_path = os.path.join(_data_dir(), 'backups', local_filename)
         backups_dir = os.path.realpath(os.path.join(_data_dir(), 'backups'))
         extract_dir = os.path.realpath(os.path.join(backups_dir, backup_type))
 
         if not os.path.exists(zip_path):
-            print('-> Zip file not found, skipping unzip: {}'.format(zip_path))
+            print('-> Archive file not found, skipping extraction: {}'.format(zip_path))
             return
 
         # Safety check: ensure extract_dir is within backups_dir
@@ -356,17 +406,15 @@ class Atlassian:
         print('-> Extracting {} to {}'.format(local_filename, extract_dir))
 
         try:
-            with zipfile.ZipFile(zip_path, 'r') as zf:
-                for member in zf.infolist():
-                    member_path = os.path.realpath(os.path.join(extract_dir, member.filename))
-                    if os.path.commonpath([member_path, extract_dir]) != extract_dir:
-                        raise ValueError('Zip slip attempt detected in member: {}'.format(member.filename))
-                    zf.extract(member, extract_dir)
+            if self._is_gzip(zip_path):
+                self._extract_gzip(zip_path, local_filename, extract_dir)
+            else:
+                self._extract_zip(zip_path, extract_dir)
         except Exception as e:
-            print('-> Extraction failed: {}. Zip file retained: {}'.format(e, zip_path))
+            print('-> Extraction failed: {}. Archive file retained: {}'.format(e, zip_path))
             raise
 
-        # Record the UUID in the local registry before the zip is removed so
+        # Record the UUID in the local registry before the archive is removed so
         # is_already_downloaded() can still detect this backup on future runs.
         uuid_re = re.compile(
             r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
@@ -376,7 +424,7 @@ class Atlassian:
         if m:
             self._record_uuid_in_registry(m.group(0).lower(), filename=local_filename, backup_type=backup_type)
 
-        print('-> Extraction complete, removing zip: {}'.format(zip_path))
+        print('-> Extraction complete, removing archive: {}'.format(zip_path))
         os.remove(zip_path)
 
     def stream_to_s3(self, url, remote_filename):
