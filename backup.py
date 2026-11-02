@@ -6,6 +6,7 @@ import re
 import shutil
 import argparse
 import zipfile
+import gzip
 import requests
 import boto3
 from urllib.parse import urlparse, parse_qs
@@ -379,6 +380,44 @@ class Atlassian:
         print('-> Extraction complete, removing zip: {}'.format(zip_path))
         os.remove(zip_path)
 
+    def gunzip_extracted(self, backup_type='jira'):
+        """
+        Decompress every *.gz file inside the extracted backups/<backup_type>/
+        directory in place (e.g. Confluence data/*.csv.gz), removing each .gz
+        only after it has been fully decompressed. Plain files deduplicate far
+        better in tools like restic than gzip streams do.
+        """
+        backups_dir = os.path.realpath(os.path.join(_data_dir(), 'backups'))
+        extract_dir = os.path.realpath(os.path.join(backups_dir, backup_type))
+
+        if os.path.commonpath([extract_dir, backups_dir]) != backups_dir:
+            raise ValueError('Extract directory is outside the backups directory: {}'.format(extract_dir))
+        if not os.path.isdir(extract_dir):
+            print('-> Extracted directory not found, skipping gunzip: {}'.format(extract_dir))
+            return
+
+        count = 0
+        for root, _dirs, files in os.walk(extract_dir):
+            for name in files:
+                if not name.lower().endswith('.gz'):
+                    continue
+                gz_path = os.path.join(root, name)
+                out_path = gz_path[:-3]
+                tmp_path = out_path + '.part'
+                try:
+                    with gzip.open(gz_path, 'rb') as src, open(tmp_path, 'wb') as dst:
+                        shutil.copyfileobj(src, dst, 1024 * 1024)
+                except Exception as e:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                    print('-> Gunzip failed: {}. File retained: {}'.format(e, gz_path))
+                    raise
+                os.replace(tmp_path, out_path)
+                os.remove(gz_path)
+                count += 1
+
+        print('-> Gunzipped {} file(s) in {}'.format(count, extract_dir))
+
     def stream_to_s3(self, url, remote_filename):
         print('-> Streaming to S3')
 
@@ -534,6 +573,8 @@ def handle_completed_backup(atlas, config, backup_url, backup_type):
         backup_handled = True
         if is_enabled(config.get('UNZIP_BACKUP')):
             atlas.unzip_backup(file_name, backup_type)
+            if is_enabled(config.get('GUNZIP_DATA')):
+                atlas.gunzip_extracted(backup_type)
 
     if 'UPLOAD_TO_S3' in config and config['UPLOAD_TO_S3'].get('S3_BUCKET', '') != '':
         atlas.stream_to_s3(backup_url, file_name)

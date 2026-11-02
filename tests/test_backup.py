@@ -28,6 +28,18 @@ class HandleCompletedBackupTests(unittest.TestCase):
         atlas.download_file.assert_called_once_with('https://example.invalid/fileId=abc', 'confluence_backup.zip')
         atlas.unzip_backup.assert_called_once_with('confluence_backup.zip', 'confluence')
         run_post_backup_command.assert_called_once_with(config, backup_path=expected_backup_path, backup_type='confluence')
+        atlas.gunzip_extracted.assert_not_called()
+
+    def test_gunzips_extracted_data_when_enabled(self):
+        atlas = Mock()
+        atlas.generate_filename.return_value = 'confluence_backup.zip'
+        atlas.is_already_downloaded.return_value = None
+        config = {'DOWNLOAD_LOCALLY': True, 'UNZIP_BACKUP': True, 'GUNZIP_DATA': 'true'}
+
+        backup.handle_completed_backup(atlas, config, 'https://example.invalid/fileId=abc', 'confluence')
+
+        atlas.unzip_backup.assert_called_once_with('confluence_backup.zip', 'confluence')
+        atlas.gunzip_extracted.assert_called_once_with('confluence')
 
     def test_runs_post_backup_command_with_zip_path_when_unzip_disabled(self):
         atlas = Mock()
@@ -292,3 +304,41 @@ class UnzipBackupRegistryTests(unittest.TestCase):
         self.assertEqual(registry[self.UUID]['backup_type'], 'jira')
         # zip should have been removed
         self.assertFalse(os.path.exists(zip_path))
+
+
+class GunzipExtractedTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.atlas = backup.Atlassian({
+            'USER_EMAIL': 'u@example.com', 'API_TOKEN': 't',
+            'HOST_URL': 'x.atlassian.net', 'INCLUDE_ATTACHMENTS': 'true',
+        })
+        self.data_dir = os.path.join(self.tmp, 'backups', 'confluence', 'data')
+        os.makedirs(self.data_dir)
+
+    def _run(self):
+        with patch.dict(os.environ, {'DATA_DIR': self.tmp}), redirect_stdout(io.StringIO()):
+            self.atlas.gunzip_extracted('confluence')
+
+    def test_decompresses_gz_files_in_place(self):
+        import gzip
+        with gzip.open(os.path.join(self.data_dir, 'content.csv.gz'), 'wb') as f:
+            f.write(b'id,title\n1,Home\n')
+        with open(os.path.join(self.data_dir, 'entities.xml'), 'wb') as f:
+            f.write(b'<x/>')
+
+        self._run()
+
+        self.assertEqual(sorted(os.listdir(self.data_dir)), ['content.csv', 'entities.xml'])
+        with open(os.path.join(self.data_dir, 'content.csv'), 'rb') as f:
+            self.assertEqual(f.read(), b'id,title\n1,Home\n')
+
+    def test_keeps_gz_when_corrupt(self):
+        gz_path = os.path.join(self.data_dir, 'broken.csv.gz')
+        with open(gz_path, 'wb') as f:
+            f.write(b'not gzip data')
+
+        with self.assertRaises(OSError):
+            self._run()
+
+        self.assertEqual(os.listdir(self.data_dir), ['broken.csv.gz'])

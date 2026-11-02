@@ -70,6 +70,7 @@ API_TOKEN: "your-api-token"
 INCLUDE_ATTACHMENTS: false
 DOWNLOAD_LOCALLY: true
 UNZIP_BACKUP: false  # set to true to extract into backups/jira or backups/confluence and remove the zip
+GUNZIP_DATA: false   # with UNZIP_BACKUP, also decompress extracted *.gz files (e.g. Confluence data/*.csv.gz)
 
 # AWS S3 Configuration (optional)
 UPLOAD_TO_S3:
@@ -307,6 +308,7 @@ API_TOKEN: "your-api-token"
 INCLUDE_ATTACHMENTS: false
 DOWNLOAD_LOCALLY: true
 UNZIP_BACKUP: false  # set to true to extract into backups/jira or backups/confluence and remove the zip
+GUNZIP_DATA: false   # with UNZIP_BACKUP, also decompress extracted *.gz files (e.g. Confluence data/*.csv.gz)
 ```
 
 Simply omit the `UPLOAD_TO_XXX` sections you don't need.
@@ -340,6 +342,7 @@ Docker Compose `depends_on: <service>: condition: service_completed_successfully
 ```yaml
 DOWNLOAD_LOCALLY: true
 UNZIP_BACKUP: true   # better deduplication - restic chunks individual files, not a zip
+GUNZIP_DATA: true    # better deduplication - restic dedups plain CSVs, not gzip streams
 POST_BACKUP_COMMAND: "restic backup /app/backups && restic forget --keep-last 30 --prune"
 ```
 
@@ -349,12 +352,15 @@ Running restic in the same Docker container is supported, but you need the resti
 
 > **Tip**: `UNZIP_BACKUP: true` dramatically improves deduplication ratios because restic can chunk the individual extracted files instead of re-processing one large zip archive.
 
+> **Tip**: Confluence backups contain gzipped table dumps (`data/*.csv.gz`). A single edited page changes the whole gzip stream after that point, so restic re-stores most of e.g. `bodycontent.csv.gz` on every run. `GUNZIP_DATA: true` decompresses them in place so unchanged rows deduplicate; restic's own compression keeps the repository size similar. To restore, re-compress before importing: `gzip -n data/*.csv` and re-zip the folder.
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
 
 ## 📝 Changelog
 
+- **2026-11-02**: Added `GUNZIP_DATA` option to decompress gzipped files (Confluence `data/*.csv.gz`) after `UNZIP_BACKUP` extraction
 - **2026-05-11**: Added `UNZIP_BACKUP` option to extract downloaded backups into `backups/jira` or `backups/confluence` and remove the zip on success
 - **2026-04-21**: Added Playwright web UI mode as a fallback backup driver
 - **2025-06-24**: Added separate cron schedules for Jira and Confluence backups

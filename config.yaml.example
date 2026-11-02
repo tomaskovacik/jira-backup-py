@@ -5,6 +5,7 @@ API_TOKEN: "token ID generated at https://id.atlassian.com/manage/api-tokens"
 INCLUDE_ATTACHMENTS: "include attachments? this will make the backup size bigger - true / false"
 DOWNLOAD_LOCALLY: "download the backup file to backups folder? true / false"
 UNZIP_BACKUP: "unzip the downloaded backup into backups/jira or backups/confluence directory and remove the zip on success? true / false"
+GUNZIP_DATA: "with UNZIP_BACKUP, also decompress extracted *.gz files (Confluence data/*.csv.gz) in place for better restic deduplication? true / false"
 # Optional: shell command to run after a successful backup.
 # The backup location is available as placeholders in the command string
 # and as environment variables injected into the subprocess.
